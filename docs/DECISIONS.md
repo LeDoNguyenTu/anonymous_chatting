@@ -140,9 +140,15 @@ authentication key, not merely one message. The way to never reuse a nonce is to
 never be the code that picks one. MLS owns the key schedule and the nonce
 derivation; this project stays out of it.
 
-The one place a per-file key is generated directly is the attachment pipeline
-(Phase 3, D-013), and that is flagged there as the single highest-risk piece of
-code in the repository.
+The attachment pipeline (Phase 3, SPEC §7.1) will need a per-file key generated
+outside MLS, since a file is not a group message. **This entry previously cited
+"D-013" as the decision authorizing that; D-013 is the Tor-vs-VPN decision and
+says nothing about attachments.** No entry currently designs or authorizes
+AEAD-outside-MLS usage for either the attachment pipeline or backup export
+(SPEC §7.3, which has the identical shape — a file, not a group message). Both
+are stop-and-ask under SPEC §2.6 when Phase 3 starts them, precisely because
+this decision's own rule is "application code never calls an AEAD directly,"
+and a file-encryption feature is exactly a case where it must.
 
 ---
 
