@@ -11,11 +11,18 @@ mod contacts;
 mod error;
 mod messaging;
 mod payload;
+mod storage_controls;
 mod types;
 
 pub use error::ApiError;
 pub(crate) use payload::Payload;
-pub use types::{ConversationSummary, IdentityState, Message, Received, SecurityDetails};
+pub use types::{
+    ConversationSummary, IdentityChangeNotice, IdentityState, Message, Received, SecurityDetails,
+};
+
+/// Re-exported so a client can offer the retention choices without reaching
+/// past this module into storage.
+pub use crate::storage::RetentionPolicy;
 
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -113,6 +120,12 @@ impl Pouch {
             conversations: HashMap::new(),
         };
         pouch.reload_conversations()?;
+
+        // Retention is applied on open, not only when the setting changes. A
+        // device that was switched off for a month under a 7-day policy must
+        // not come back holding a month of messages.
+        pouch.store.purge_expired(now())?;
+
         Ok(pouch)
     }
 

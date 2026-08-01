@@ -8,7 +8,9 @@
 //! need something lower level, the correct response is to add an operation to
 //! `api`, never to expose the module beneath it.
 //!
-//! Phase 0: module skeleton only. The MLS integration lands in Phase 1.
+//! Phase 1 built the working 1:1 encrypted chat. Phase 2 added the storage
+//! controls: retention, disappearing messages, the offline queue, identity
+//! change detection, and passphrase protection.
 
 #![deny(missing_docs)]
 
@@ -27,8 +29,11 @@ pub mod storage;
 /// TLS with SPKI pinning, offline queue, Tor (Phase 1 and 4).
 pub mod transport;
 
-pub use api::{ApiError, ConversationSummary, IdentityState, Message, Pouch, SecurityDetails};
+pub use api::{
+    ApiError, ConversationSummary, IdentityChangeNotice, IdentityState, Message, Pouch,
+    RetentionPolicy, SecurityDetails,
+};
 
 /// The build phase this crate implements. Anything above this is documented
 /// intent, not working software.
-pub const SPEC_PHASE: u8 = 1;
+pub const SPEC_PHASE: u8 = 2;

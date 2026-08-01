@@ -95,11 +95,15 @@ impl Pouch {
                     id: conversation_id,
                     contact_name: contact.display_name.clone(),
                     contact_id: contact.id.clone(),
-                    // Never Verified unless the user actually said so.
-                    identity: if contact.verified {
-                        IdentityState::Verified
-                    } else {
-                        IdentityState::Unverified
+                    // Never Verified unless the user actually said so, and an
+                    // unanswered key change outranks both other states. It is
+                    // the loudest thing the strip can say, and it stays until
+                    // the user answers the modal rather than until they look
+                    // at the screen.
+                    identity: match self.store.identity_change(&contact.id)? {
+                        Some(change) if !change.acknowledged => IdentityState::KeyChanged,
+                        _ if contact.verified => IdentityState::Verified,
+                        _ => IdentityState::Unverified,
                     },
                     last_message: messages.last().map(|m| m.body.clone()),
                 });
