@@ -45,6 +45,8 @@ fn main() {
             commands::is_passphrase_protected,
             commands::set_passphrase,
             commands::clear_passphrase,
+            commands::export_backup,
+            commands::import_backup,
         ])
         .run(tauri::generate_context!())
         .expect("failed to start the Pouch window");

@@ -3162,6 +3162,7 @@ dependencies = [
 name = "pouch-desktop"
 version = "0.1.0"
 dependencies = [
+ "hex",
  "pouch-core",
  "serde",
  "serde_json",

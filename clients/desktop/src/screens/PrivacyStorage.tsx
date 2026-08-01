@@ -24,12 +24,14 @@ interface PrivacyStorageProps {
   bridge: PouchBridge;
   onBack: () => void;
   onWiped: () => void;
+  onExportBackup: () => void;
 }
 
 export function PrivacyStorage({
   bridge,
   onBack,
   onWiped,
+  onExportBackup,
 }: PrivacyStorageProps) {
   const [choices, setChoices] = useState<RetentionChoice[]>([]);
   const [policy, setPolicy] = useState<RetentionValue | null>(null);
@@ -232,14 +234,26 @@ export function PrivacyStorage({
         </p>
       </section>
 
+      {/* -- backup ----------------------------------------------------------- */}
+      <section className="panel">
+        <h2 className="panel__h">Move your history to a new device</h2>
+        <p className="panel__note">
+          Encrypted with a key only you hold, and never uploaded anywhere.
+          Restoring is done from the first-run screen, on the device you are
+          moving to.
+        </p>
+        <button
+          type="button"
+          className="button-primary"
+          onClick={onExportBackup}
+        >
+          Export encrypted backup
+        </button>
+      </section>
+
       {/* -- what this build does not do ------------------------------------ */}
       <section className="panel">
         <h2 className="panel__h">Not in this build</h2>
-        <p className="panel__note">
-          <strong>Encrypted backup export.</strong> Not implemented. It needs a
-          decision about encrypting a file outside the messaging protocol, which
-          this project does not make without recording why.
-        </p>
         <p className="panel__note">
           <strong>Key from the operating system's keystore.</strong> Not
           implemented. Until it is, a device with no passphrase is protected by

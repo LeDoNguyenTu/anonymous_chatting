@@ -356,6 +356,104 @@ pub async fn wipe_all(state: State<'_, AppState>) -> Result<(), String> {
     state.with(|p| p.wipe_all().map_err(|e| e.to_string())).await
 }
 
+/* -- Phase 3 (via D-037): backup export / import (SPEC §6.7.10) ------------ */
+
+/// What the export screen shows and offers for download.
+///
+/// The recovery key is generated here, once, and this is the only time it
+/// exists outside the user's own record of it — nothing in this project
+/// stores it. `backup` travels to the webview as plain bytes rather than a
+/// written file because this process has no file-save dialog; the screen
+/// turns it into a download itself (SPEC §7.3: "the user places where they
+/// choose").
+#[derive(Serialize)]
+pub struct ExportBackupView {
+    pub recovery_key_hex: String,
+    pub backup: Vec<u8>,
+    pub file_name: String,
+}
+
+/// Encrypts everything this device holds into a portable backup.
+#[tauri::command]
+pub async fn export_backup(state: State<'_, AppState>) -> Result<ExportBackupView, String> {
+    state
+        .with(|p| {
+            let recovery_key = pouch_core::new_recovery_key();
+            let backup = p.export_backup(&recovery_key).map_err(|e| e.to_string())?;
+            Ok(ExportBackupView {
+                recovery_key_hex: hex::encode(&recovery_key),
+                backup,
+                file_name: format!("pouch-backup-{}.pouchbk", unix_seconds()),
+            })
+        })
+        .await
+}
+
+/// What the import screen reports once a restore succeeds.
+#[derive(Serialize)]
+pub struct ImportBackupView {
+    pub display_name: String,
+    pub conversation_count: usize,
+}
+
+/// Restores a backup onto this device, as a fresh identity.
+///
+/// Refuses if an identity is already open here — `Pouch::import_backup`
+/// creates a device from nothing, the same precondition `create_identity`
+/// has, and overwriting a live identity with a restored one is not a flow
+/// this screen offers (SPEC §6.7.10 is reached from first run, not from an
+/// already-open device).
+#[tauri::command]
+pub async fn import_backup(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    recovery_key_hex: String,
+    backup: Vec<u8>,
+) -> Result<ImportBackupView, String> {
+    if state.is_open().await {
+        return Err(
+            "An identity is already open on this device. Wipe local data first if you want to restore a backup here."
+                .to_string(),
+        );
+    }
+
+    let recovery_key = hex::decode(recovery_key_hex.trim())
+        .map_err(|_| "That recovery key isn't valid hex — check you copied all of it.".to_string())?;
+
+    let path = db_path(&app)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let mut key = device_key(&app)?;
+
+    let pouch = Pouch::import_backup(
+        &path.to_string_lossy(),
+        &mut key,
+        &recovery_key,
+        &backup,
+        relay_config(),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let display_name = pouch.display_name().to_string();
+    let conversation_count = pouch.conversations().map_err(|e| e.to_string())?.len();
+    state.set(pouch).await;
+    Ok(ImportBackupView {
+        display_name,
+        conversation_count,
+    })
+}
+
+/// Seconds since the epoch, for a backup file name that sorts and does not
+/// collide across exports in the same session.
+fn unix_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 /* -- Phase 2: the storage controls (SPEC §6.7.7) --------------------------- */
 
 /// A contact's identity key having changed, flattened for the webview.

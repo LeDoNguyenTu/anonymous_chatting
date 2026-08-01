@@ -89,6 +89,19 @@ export interface IdentityChangeView {
   changedAt: number;
 }
 
+/** What the export screen shows and turns into a download (SPEC §6.7.10). */
+export interface ExportBackupView {
+  recoveryKeyHex: string;
+  backup: Uint8Array;
+  fileName: string;
+}
+
+/** What the import screen reports once a restore succeeds. */
+export interface ImportBackupView {
+  displayName: string;
+  conversationCount: number;
+}
+
 export interface PouchBridge {
   hasIdentity(): Promise<boolean>;
   createIdentity(displayName: string): Promise<string>;
@@ -124,6 +137,16 @@ export interface PouchBridge {
   isPassphraseProtected(): Promise<boolean>;
   setPassphrase(passphrase: string): Promise<void>;
   clearPassphrase(): Promise<void>;
+
+  /* Backup export/import (SPEC §6.7.10, §7.3). Export is only meaningful on a
+   * device that already has an identity open; import is only meaningful on
+   * one that does not — `Pouch::import_backup` creates a device from
+   * nothing, the same precondition `createIdentity` has. */
+  exportBackup(): Promise<ExportBackupView>;
+  importBackup(
+    recoveryKeyHex: string,
+    backup: Uint8Array,
+  ): Promise<ImportBackupView>;
 }
 
 /* -- wire shapes -----------------------------------------------------------
@@ -158,6 +181,17 @@ interface WireIdentityChange {
   contact_id: string;
   contact_name: string;
   changed_at: number;
+}
+
+interface WireExportBackup {
+  recovery_key_hex: string;
+  backup: number[];
+  file_name: string;
+}
+
+interface WireImportBackup {
+  display_name: string;
+  conversation_count: number;
 }
 
 interface WireSecurityDetails {
@@ -342,5 +376,25 @@ export function tauriBridge(
       invoke<void>("set_passphrase", { passphrase }),
 
     clearPassphrase: () => invoke<void>("clear_passphrase"),
+
+    exportBackup: async () => {
+      const r = await invoke<WireExportBackup>("export_backup");
+      return {
+        recoveryKeyHex: r.recovery_key_hex,
+        backup: Uint8Array.from(r.backup),
+        fileName: r.file_name,
+      };
+    },
+
+    importBackup: async (recoveryKeyHex, backup) => {
+      const r = await invoke<WireImportBackup>("import_backup", {
+        recoveryKeyHex,
+        backup: Array.from(backup),
+      });
+      return {
+        displayName: r.display_name,
+        conversationCount: r.conversation_count,
+      };
+    },
   };
 }

@@ -117,7 +117,9 @@ Full reasoning is in `docs/DECISIONS.md` (D-001…D-037). The short version:
 
 Phases 0, 1, and 2 are code complete — **Phase 2 fully now**, including
 backup export/import, which was blocked, then approved (D-037), then built
-and verified in the same session. **Phase 3 is under way**: compression
+and verified in the same session, and is now wired all the way through the
+desktop client too (a later session: `commands.rs`, `bridge.ts`, and a new
+screen, `BackupRestore.tsx`). **Phase 3 is under way**: compression
 (manifest stage 3, D-036) is done. The attachment pipeline is not — it
 needs a metadata-stripping library choice D-037 does not answer. Sealed
 sender moved to Phase 4 (SPEC.md's phase table now says so): the relay's
@@ -125,9 +127,12 @@ wire protocol already carries no sender field, so what remains is the
 TCP/TLS source IP a direct connection exposes, which only Tor removes.
 139 Rust tests and 36 frontend tests pass, verified locally on Windows; the
 Phase 2 and initial-compression commits are confirmed green via `gh run
-list`, but D-037 and backup export/import have not yet been observed going
-green in GitHub Actions — confirm that before trusting them the way Phase
-0/1's "CI green" was trusted.
+list`, but D-037, backup export/import, and the desktop backup UI have not
+yet been observed going green in GitHub Actions — confirm that before
+trusting them the way Phase 0/1's "CI green" was trusted. The desktop
+backup screens specifically have also never been seen in a running window
+— this environment cannot launch the Tauri shell — so "verified" for them
+means build/typecheck/test only, not a GUI click-through.
 
 Full detail, the runnable demo, the manual checks still owed, and the ordered
 list of what is next are in `docs/PROGRESS.md`. Read that before starting work.
@@ -160,10 +165,11 @@ have been since Phase 1. If you find yourself looking for `api.rs` or
 | `server/src/store.rs` | The relay's four columns |
 | `server/src/http.rs` | Three endpoints, no logging middleware |
 | `clients/cli/src/commands/storage.rs` | `keep`, `disappear`, `queue`, `changes`, `acknowledge`, `passphrase` |
-| `clients/cli/src/commands/backup.rs` | `backup export`, `backup import` — not yet wired into the desktop client |
-| `clients/desktop/src-tauri/src/commands.rs` | 28 IPC commands, each one `Pouch` call |
+| `clients/cli/src/commands/backup.rs` | `backup export`, `backup import` |
+| `clients/desktop/src-tauri/src/commands.rs` | 30 IPC commands, each one `Pouch` call — includes `export_backup`/`import_backup` |
 | `clients/desktop/src/lib/bridge.ts` | The typed IPC boundary. No passthrough by design. |
 | `clients/desktop/src/screens/PrivacyStorage.tsx` | Screen 7, SPEC §6.7.7 |
+| `clients/desktop/src/screens/BackupRestore.tsx` | Screen 10, SPEC §6.7.10 — export (from Privacy and storage) and import (from First run), gated by the same has-an-identity-or-not precondition `core` already has |
 | `clients/desktop/src/components/IdentityChangeModal.tsx` | Screen 6, SPEC §6.7.6 — the one modal in the product |
 
 ## Hard-won lessons from Phase 1

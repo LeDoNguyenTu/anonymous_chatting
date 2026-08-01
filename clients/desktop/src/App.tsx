@@ -10,6 +10,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { IdentityChangeModal } from "./components/IdentityChangeModal";
 import { AddContact } from "./screens/AddContact";
+import { BackupRestore } from "./screens/BackupRestore";
 import { Conversation } from "./screens/Conversation";
 import { ConversationList } from "./screens/ConversationList";
 import { FirstRun } from "./screens/FirstRun";
@@ -32,7 +33,9 @@ type Route =
   | { name: "safety"; contactId: string; contactName: string }
   | { name: "add-contact" }
   | { name: "privacy" }
-  | { name: "security" };
+  | { name: "security" }
+  | { name: "backup-export" }
+  | { name: "backup-import" };
 
 export default function App({ bridge: injected }: { bridge?: PouchBridge } = {}) {
   const bridge = useMemo(() => injected ?? tauriBridge(invoke), [injected]);
@@ -116,7 +119,11 @@ export default function App({ bridge: injected }: { bridge?: PouchBridge } = {})
       {route.name === "loading" && <p className="screen">Opening…</p>}
 
       {route.name === "first-run" && (
-        <FirstRun bridge={bridge} onCreated={openList} />
+        <FirstRun
+          bridge={bridge}
+          onCreated={openList}
+          onRestore={() => setRoute({ name: "backup-import" })}
+        />
       )}
 
       {route.name === "list" && (
@@ -166,11 +173,29 @@ export default function App({ bridge: injected }: { bridge?: PouchBridge } = {})
           bridge={bridge}
           onBack={openList}
           onWiped={() => setRoute({ name: "first-run" })}
+          onExportBackup={() => setRoute({ name: "backup-export" })}
         />
       )}
 
       {route.name === "security" && (
         <SecurityDetails bridge={bridge} onBack={openList} />
+      )}
+
+      {route.name === "backup-export" && (
+        <BackupRestore
+          mode="export"
+          bridge={bridge}
+          onBack={() => setRoute({ name: "privacy" })}
+        />
+      )}
+
+      {route.name === "backup-import" && (
+        <BackupRestore
+          mode="import"
+          bridge={bridge}
+          onRestored={openList}
+          onBack={() => setRoute({ name: "first-run" })}
+        />
       )}
 
       {pendingChange && (

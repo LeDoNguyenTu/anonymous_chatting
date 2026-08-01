@@ -13,9 +13,10 @@ import "./screens.css";
 interface FirstRunProps {
   bridge: PouchBridge;
   onCreated: () => void;
+  onRestore: () => void;
 }
 
-export function FirstRun({ bridge, onCreated }: FirstRunProps) {
+export function FirstRun({ bridge, onCreated, onRestore }: FirstRunProps) {
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -77,6 +78,10 @@ export function FirstRun({ bridge, onCreated }: FirstRunProps) {
           {busy ? "Creating identity" : "Create identity"}
         </button>
       </form>
+
+      <button type="button" className="button-quiet" onClick={onRestore}>
+        Restore from a backup instead
+      </button>
 
       <p className="screen__footnote">
         Pouch is unaudited student work. Do not rely on it if you face a serious

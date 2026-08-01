@@ -13,11 +13,11 @@ Do not begin a phase before the previous phase meets its exit criteria.
 | | |
 |---|---|
 | **Phase complete** | 0 — Foundation · 1 — Working 1:1 encrypted chat · 2 — Storage control and hardening, **fully, as of today** |
-| **Phase next** | 3 — Attachments and sealed sender. Compression (stage 3) is done. Backup export was Phase 2's deferred item; it is done too, moved here because D-037 (below) unblocked it the same session it unblocks attachments. |
+| **Phase next** | 3 — Attachments and sealed sender. Compression (stage 3) is done. Backup export/import is done in `core`, the CLI, **and now the desktop client**. |
 | **Branches** | `main` (repository default) and `develop`, both pushed; `main` intentionally left behind `develop` — see the note in this section's history for why |
 | **Blocked on** | The attachment pipeline still needs a second, narrower decision than backup did: which library strips EXIF/GPS/device metadata, and whether it handles video containers as SPEC §7.1 itself flags as an open question. D-037 answered the encryption half; it did not answer this half. Sealed sender needs something bigger — this relay's wire protocol already carries no sender field, so the only remaining "who sent this" signal is the TCP/TLS source IP a direct connection necessarily exposes, which is Phase 4's Tor onion service to close, not a Phase-3-sized change. |
 | **Tests** | 113 Rust core + 10 end-to-end + 12 relay + 4 server-blindness = 139 Rust · 36 frontend |
-| **CI** | confirmed green via `gh run list` for the Phase 2 and initial Phase 3 (compression) commits. Everything after — D-037, backup export/import — has been verified locally the same way (fmt, clippy -D warnings, full test suite, both guardrail scripts, and a live CLI export→wipe→import→send round trip against a real relay) but not yet confirmed in Actions. Check before trusting it the same way. |
+| **CI** | confirmed green via `gh run list` for the Phase 2 and initial Phase 3 (compression) commits. D-037/backup export/import (core+CLI) verified locally (fmt, clippy -D warnings, full test suite, both guardrail scripts, a live CLI export→wipe→import→send round trip) but not yet confirmed in Actions at last check — confirm before trusting it the same way. The desktop backup UI commit (this session) is verified locally the same way, plus `cargo check --all-targets --locked` and `npm run typecheck/test/build`, but the GUI itself could not be run — see below. |
 
 ### Owed to the project owner
 
@@ -329,7 +329,7 @@ prove has been proved; what needs two machines or a running GUI has not.
 | Passphrase option with Argon2id | **done** |
 | Offline queue and retry on reconnect | **done** — SPEC §8.2 names this explicitly; Phase 1 left it as a promise in error copy ("will send when you reconnect") that nothing kept |
 | Identity change detection and the warning modal | **done** |
-| Encrypted backup export and import | **done, in `core` and the CLI — not yet in the desktop screen.** Was blocked, then unblocked; see below. |
+| Encrypted backup export and import | **done — `core`, the CLI, and the desktop client.** Was blocked, then unblocked; see below. |
 | Full test suite, §8.1/§8.2/§8.8 | **done**, including two gaps found and closed this session — see below |
 
 ### Backup export/import: blocked, then built, same session
@@ -356,13 +356,50 @@ fresh path, send from the restored device, confirm the original peer
 receives it — round-tripped correctly, matching what the automated
 end-to-end test already proved.
 
-**The desktop screen does not have working backup buttons yet.** The Privacy
-and storage screen's "Not in this build" copy for backup is therefore still
-accurate for the desktop client specifically, even though the capability
-now exists in `core` and the CLI. Wiring `Pouch::export_backup`/
-`import_backup` through `commands.rs`, `bridge.ts`, and the screen's UI —
-recovery key display, the "confirm you saved it" gate SPEC §6.7.10
-requires, and the import flow — is the next piece, not yet started.
+**The desktop screen now has working backup buttons.** Landed in the
+following session: two new Tauri commands (`export_backup`, `import_backup`
+in `commands.rs`), typed IPC in `bridge.ts`, and a new screen,
+`BackupRestore.tsx` — SPEC's screen 10. It renders as two different flows
+depending on where it is reached from, matching the precondition
+`Pouch::import_backup` already has (it creates a device from nothing, the
+same precondition `create_identity` has — it is not a merge):
+
+- **Export** — reached from Privacy and storage's new "Move your history to
+  a new device" panel. Generates a fresh recovery key and backup file,
+  shows the key in mono behind a "confirm you saved it" checkbox
+  (SPEC §6.7.10's exact gate and copy), then turns the encrypted bytes into
+  a browser-style download (`Blob` + `<a download>`) once confirmed —
+  no OS "save as" dialog was added; that would have meant a new Tauri
+  plugin (`tauri-plugin-dialog`) and its own capability/permission wiring,
+  a bigger and unverifiable-by-GUI addition for what a standard webview
+  download already does honestly.
+- **Import** — reached from First run's new "Restore from a backup instead"
+  link, i.e. only reachable before an identity exists on the device, which
+  is the only precondition `Pouch::import_backup` supports. Uses a plain
+  `<input type="file">` (no plugin needed — this is a standard web API a
+  Tauri webview already supports) plus a recovery-key text field.
+
+One small, low-risk dependency addition: `hex = "=0.4.3"` in
+`clients/desktop/src-tauri/Cargo.toml`, to encode/decode the recovery key
+over IPC the same way the CLI already does. Not a new choice for the
+project — `hex` is already pinned at the workspace level and used by
+`core` and the CLI; this crate sits outside the workspace (needs its own
+copy of the pin, D-029) and had not needed it before. `Cargo.lock` picked
+it up without changing any other resolved version.
+
+Verified: `cargo build`/`cargo check --all-targets --locked`/`cargo clippy
+-- -D warnings` all clean for the desktop crate outside the workspace,
+`cargo fmt --all -- --check` at the repo root (which is what CI actually
+runs — the desktop crate is excluded from the workspace so it is not part
+of that check, and running `cargo fmt` scoped to the crate directory
+turned up pre-existing formatting the project has apparently never had
+checked, on code this session did not touch — left alone rather than
+reformatted as a drive-by), and `npm run typecheck && npm test && npm run
+build` for the frontend, all clean. **Not verified**: actually launching
+the GUI and clicking through the two flows — this environment cannot run
+the Tauri shell (no GTK/WebKitGTK story that applies to a real window,
+and even on Windows this is a headless session). That is a real gap, not
+a formality; say so if asked whether it has been "tested."
 
 The attachment pipeline (Phase 3) needed the identical AEAD-outside-MLS
 question and is unblocked by the same D-037 approval. What it still needs
@@ -539,11 +576,14 @@ described above.
   SPEC §7.1. Then build the pipeline itself: per-file key (D-037 covers how),
   strip, pad, encrypt, upload, attachment preview screen, image/file
   rendering.
-- [ ] **Wire backup into the desktop client.** `core` and the CLI are done;
-  `commands.rs`, `bridge.ts`, and the Privacy and storage screen's recovery-
-  key display and import flow are not.
+- [x] **Wire backup into the desktop client.** Done this session — see the
+  "Backup export/import: blocked, then built, same session" section under
+  Phase 2, above.
 - [ ] **Sealed sender itself** — waits on Phase 4 existing, per the reorder
   above.
+- [ ] **Manual GUI check for the backup screens**, once a window can
+  actually be launched — the two flows are verified by build/typecheck/test
+  only, per the note above.
 
 ---
 
