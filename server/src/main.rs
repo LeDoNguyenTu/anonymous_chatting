@@ -1,56 +1,47 @@
-//! Pouch relay.
+//! Pouch relay binary.
 //!
-//! A queue for opaque blobs. It has no concept of a user.
-//!
-//! The design constraint this binary exists to satisfy: **a full database dump
-//! handed to an adversary must yield nothing useful.** Everything else is
-//! downstream of that. Four fields are stored per queued message — a random ID,
-//! an opaque inbox identifier, a ciphertext blob, and a TTL — and no request is
-//! ever written to a log.
-//!
-//! Phase 0: the no-logging stance is declared and asserted here. The queue
-//! endpoints arrive in Phase 1, and the server-blindness test (SPEC §8.3) is
-//! written before them.
+//! Binds the queue to an address and sweeps expired blobs. Everything
+//! interesting is in the library — see `lib.rs` for the design constraint this
+//! server exists to satisfy.
 
-/// Access logging is off, deliberately and explicitly.
-///
-/// This constant is not decorative. SPEC §2.3 requires that logging be
-/// *explicitly disabled* rather than merely left at its default, because those
-/// are different things: almost every HTTP stack logs by default, and "we never
-/// configured logging" still produces a full request log containing IP
-/// addresses and timing. `scripts/check-guardrails.sh` asserts this declaration
-/// exists and that no tracing layer is mounted alongside it.
-///
-/// The rule it encodes: the relay writes no record of who connected, from
-/// where, or when. Not to stdout, not to a file, not to a metrics endpoint.
-pub const ACCESS_LOGGING_DISABLED: bool = true;
+use std::time::Duration;
 
-/// Compile-time enforcement, so flipping the constant fails the build rather
-/// than a test someone can mark `#[ignore]`.
-const _: () = assert!(
-    ACCESS_LOGGING_DISABLED,
-    "the relay must never be built with access logging enabled"
-);
+use pouch_relay::http::{router, RelayState, MAX_BLOB_BYTES};
+use pouch_relay::store::Store;
 
-fn main() {
-    // No tracing subscriber is installed. That is the point. Adding one later
-    // to "get some observability" is a change to the threat model, not an
-    // operations detail — SPEC §2.6 says stop and ask.
-    println!("pouch-relay: Phase 0 stub. Queue endpoints land in Phase 1.");
-}
+/// How often expired blobs are swept. Expiry is also enforced on read, so a
+/// stopped sweeper delays erasure but cannot cause a blob to be served past its
+/// TTL.
+const SWEEP_INTERVAL: Duration = Duration::from_secs(60);
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let db_path = std::env::var("POUCH_RELAY_DB").unwrap_or_else(|_| "pouch-relay.db".to_string());
+    let bind = std::env::var("POUCH_RELAY_BIND").unwrap_or_else(|_| "127.0.0.1:8443".to_string());
 
-    /// Guards the most plausible regression path: someone flips this to `false`
-    /// while adding request logging to debug something, and forgets.
-    ///
-    /// `black_box` keeps this an actual runtime assertion. Without it the
-    /// compiler folds the constant away and the test asserts nothing — which
-    /// is precisely the failure mode a security guard must not have.
-    #[test]
-    fn access_logging_stays_disabled() {
-        assert!(std::hint::black_box(ACCESS_LOGGING_DISABLED));
-    }
+    let store = Store::open(&db_path, MAX_BLOB_BYTES)?;
+    let state = RelayState::new(store);
+
+    // Sweeper. Deliberately holds the lock only for the duration of one delete.
+    let sweeper = state.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(SWEEP_INTERVAL).await;
+            if let Ok(store) = sweeper.store().lock() {
+                // A failed sweep is not reported anywhere. There is nowhere to
+                // report it to: the relay writes no logs (SPEC §2.3), and
+                // expiry is enforced on read regardless.
+                let _ = store.sweep_expired();
+            }
+        }
+    });
+
+    let listener = tokio::net::TcpListener::bind(&bind).await?;
+
+    // The only line this process ever prints. It names the bind address, which
+    // the operator already knows, and nothing about any request.
+    println!("pouch-relay listening on {bind} (access logging disabled)");
+
+    axum::serve(listener, router(state)).await?;
+    Ok(())
 }

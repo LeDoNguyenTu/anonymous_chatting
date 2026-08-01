@@ -396,3 +396,77 @@ It uses the same `core` API surface as the desktop client, per D-012 — it is n
 a privileged back door into the internals. If the CLI needs an operation the
 desktop client does not have, that is a signal about the API, not a licence to
 bypass it.
+
+---
+
+## D-019 — The relay database is deliberately *not* encrypted
+**Date:** 2026-08-01 · **Status:** accepted
+
+**Decision.** The relay stores its queue in plain SQLite. No SQLCipher, no
+at-rest encryption of any kind.
+
+**Why.** There is nothing in it to protect. The blobs are ciphertext the relay
+holds no key for, the inbox identifiers are random, and the expiry column is
+bucketed. Encrypting that would protect nothing that is not already protected.
+
+**The reason it would be actively harmful.** An encrypted relay database invites
+the belief that the relay's confidentiality matters — that the system's security
+rests partly on the operator keeping a key safe. It does not, and must not. The
+whole architecture is arranged so that the operator can be hostile. Adding a lock
+to a box that is empty by design is security theatre, which SPEC §2.2 forbids,
+and it would make the honest sentence in the README ("there is nothing meaningful
+to hand over") harder to say.
+
+The client database is a different matter entirely and *is* SQLCipher (D-007).
+That one holds plaintext.
+
+---
+
+## D-020 — `expires_at` is bucketed to the hour
+**Date:** 2026-08-01 · **Status:** accepted
+
+**Decision.** The relay's expiry column is computed by flooring the arrival
+instant to an hour boundary, then adding the TTL plus one bucket. Every blob
+arriving within the same hour carries a byte-identical expiry.
+
+**Why this is not a micro-optimisation.** A second-precision expiry column is an
+exact arrival clock wearing a different hat: subtract the known TTL and you have
+the moment each message was sent, for every blob in the queue. SPEC §2.3 forbids
+storing plaintext timestamps beyond the queue TTL, and the product's "what the
+relay could see" screen lists *exact send time* under NOT VISIBLE. Either that
+claim is true in the storage layer or the screen is lying, and a manifest that
+lies is worse than no manifest (§8.6).
+
+**The ordering matters and is easy to get wrong.** Adding the TTL first and
+bucketing the sum does not work — the result still varies with the arrival
+instant, so the column stays a clock. The arrival has to be bucketed first. The
+first implementation here made exactly that mistake and the test caught it.
+
+Flooring rather than ceiling, because ceiling splits the hour at its boundary
+(14:00:00 and 14:00:01 land in different buckets), which groups nothing. Flooring
+gives away up to an hour of TTL, so one bucket is added back; a blob therefore
+lives at least its full TTL and at most one hour longer.
+
+**Cost.** Up to one hour of over-retention. Accepted: the alternative is an
+arrival clock, and the shortest retention setting the product offers is 24 hours.
+
+---
+
+## D-021 — Collection and deletion are separate requests
+**Date:** 2026-08-01 · **Status:** accepted
+
+**Decision.** `GET /inbox/{id}` returns waiting blobs without erasing them. The
+client erases them with an explicit `POST /inbox/{id}/ack` after it has stored
+them locally.
+
+**Why not delete on read.** A client whose connection drops mid-response would
+lose the message permanently, and a message the relay silently destroyed is
+indistinguishable — from the user's side — from one that was never sent. SPEC
+§6.9 requires errors to explain what happened; silent loss cannot.
+
+**What it costs.** A blob lives slightly longer than strictly necessary, and a
+client that never acknowledges leaves blobs until TTL. Bounded by the TTL either
+way, and the relay cannot read them regardless.
+
+**Acknowledgement is scoped to the inbox**, so possession of a message
+identifier is not on its own sufficient to delete another inbox's mail.

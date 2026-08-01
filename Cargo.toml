@@ -32,7 +32,10 @@ subtle = "=2.6.1"
 zeroize = { version = "=1.8.1", features = ["zeroize_derive"] }
 
 # --- storage --------------------------------------------------------------
-rusqlite = "=0.32.1"
+# `bundled` builds SQLite from source so the relay does not inherit whatever
+# version the host happens to ship. The relay database is deliberately NOT
+# SQLCipher — see DECISIONS.md D-019.
+rusqlite = { version = "=0.32.1", features = ["bundled"] }
 
 # --- transport / server ---------------------------------------------------
 axum = "=0.7.9"
@@ -52,6 +55,7 @@ serde = { version = "=1.0.216", features = ["derive"] }
 serde_json = "=1.0.134"
 thiserror = "=2.0.9"
 uuid = { version = "=1.11.0", features = ["v4", "serde"] }
+tempfile = "=3.14.0"
 
 [profile.release]
 # Secrets must not survive in unwind landing pads we cannot reason about.

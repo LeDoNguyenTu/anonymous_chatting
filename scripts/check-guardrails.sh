@@ -109,7 +109,11 @@ note "3. Relay access logging must be explicitly disabled (SPEC §2.3)"
 if [ -f server/src/main.rs ]; then
   # tower-http's TraceLayer is the standard way an axum service starts logging
   # requests. Its presence in the relay is a defect, not a debugging aid.
-  if hits=$(scan -nIn 'TraceLayer' -- server/); then
+  #
+  # Matched on *usage* (`TraceLayer::…`, or the module import) rather than the
+  # bare word, so documentation explaining why the relay has no tracing does
+  # not trip the check that enforces it.
+  if hits=$(scan -nInE 'TraceLayer::|tower_http::trace|use tower_http::\{[^}]*trace' -- server/); then
     bad "relay pulls in request tracing:"
     printf '%s\n' "$hits" | sed 's/^/        /'
   else
