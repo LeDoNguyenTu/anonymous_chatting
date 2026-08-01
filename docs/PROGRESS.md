@@ -14,18 +14,26 @@ Do not begin a phase before the previous phase meets its exit criteria.
 |---|---|
 | **Phase complete** | 0 — Foundation · 1 — Working 1:1 encrypted chat (code complete) |
 | **Phase next** | 2 — Storage control and hardening |
-| **Branches** | `main` and `develop`, both at the same commit |
+| **Branches** | `main` (repository default) and `develop`, both at the same commit |
 | **Blocked on** | nothing |
-| **Tests** | 87 Rust · 24 frontend |
+| **Tests** | 87 Rust on Linux · 86 on Windows · 24 frontend |
 | **CI** | green on `main` and `develop` — all five jobs |
 
 ### Owed to the project owner
 
-- **Delete the branch `claude/private-messaging-app-xjc6n1` on GitHub.** The
-  session's git proxy returns HTTP 403 on branch deletion — a policy denial, not
-  a transient error — so it could not be removed from here. Its contents are
-  identical to `main`; only the name remains.
-- **Set `main` as the repository's default branch** (Settings → General).
+Both outstanding items were cleared on 2026-08-01. `main` is now the repository
+default branch, and `claude/private-messaging-app-xjc6n1` is deleted on the
+remote and locally.
+
+The earlier note that a git proxy returned HTTP 403 on the delete was a
+misdiagnosis. Run from a normal workstation, GitHub gave the actual reason:
+
+```
+! [remote rejected] refusing to delete the current branch: refs/heads/claude/...
+```
+
+The branch could not be deleted because it was still the repository's default.
+The two items were never independent — one was the precondition for the other.
 
 ---
 
@@ -95,8 +103,15 @@ are derived rather than asserted. See `DESIGN_SYSTEM.md` §2.2.
 - Desktop client: first run, add contact, conversation list, conversation view,
   Custody Strip, safety number screen, security details screen
 - Light and dark themes
-- Manifest at partial scope — stages 1, 4, 5, 8, 9 only. Stages 2, 3, 6, 7
-  display as `not yet implemented`, never as complete.
+- Manifest at partial scope. Corrected 2026-08-01 against the manifest a real
+  send actually printed — the stage numbers previously recorded here were wrong.
+  What ships today:
+
+  | Stage | State |
+  |---|---|
+  | 01 COMPOSED · 05 ENCRYPTED · 07 ROUTED · 08 HELD AT RELAY · 09 DELIVERED | reported, five of nine |
+  | 03 COMPRESSED · 04 PADDED · 06 SENDER SEALED | `not yet implemented`, never shown as complete |
+  | 02 METADATA REMOVED | `n/a — text message` |
 - Live stage progression and the "what the relay could see" screen
 
 ### Exit criteria
@@ -282,12 +297,102 @@ Two properties worth not breaking, both tested:
 
 ### Manual checks still owed for Phase 1 exit
 
-Run these on two real machines before calling the milestone done:
+Partially closed on 2026-08-01 from a Windows workstation. What one machine can
+prove has been proved; what needs two machines or a running GUI has not.
 
+- [x] **Copy a locked database file off a device and confirm it cannot be read.**
+  The client database was copied to a second path and inspected raw. Its first
+  fifteen bytes are not `SQLite format 3`, and the message text, both display
+  names, and every fragment searched for are absent from the file. Opening the
+  copy with a wrong key fails with `this passphrase does not open the database`.
+- [x] **Relay database confirmed clean against a real conversation.** The relay
+  store is plain SQLite by design, one table, `queue`. It contains no message
+  text, no display name, and neither participant's name.
+- [~] **Safety numbers match.** Verified digit for digit — all 60 digits
+  identical from both sides — but between two CLI clients on *one* machine.
+  The two-physical-device half still stands.
 - [ ] Two desktop clients on different machines exchange text
-- [ ] Safety numbers match on both physical devices
-- [ ] Copy a locked database file off a device and confirm it cannot be read
-- [ ] Keyboard-only navigation completes a full send
+- [ ] Safety numbers compared on two physical devices
+- [ ] Keyboard-only navigation completes a full send — needs the GUI running
+
+---
+
+## Building and running on Windows · verified 2026-08-01
+
+The project was built in a Linux container and every command recorded above is
+POSIX. It builds and runs on Windows, but three things have to be in place
+first, and one test disappears.
+
+### Prerequisites
+
+| Need | Why |
+|---|---|
+| `rustup`, `stable-x86_64-pc-windows-msvc` | — |
+| VS Build Tools with the **VCTools** workload | `ring`, `zstd-sys` and SQLCipher are C. Without a linker nothing in the workspace compiles. |
+| OpenSSL **with headers and libraries** | `bundled-sqlcipher` links OpenSSL. Linux CI has it; Windows does not. |
+
+OpenSSL has to be pointed at explicitly, because the common Windows
+distribution puts its libraries in `lib\VC\x64\MD` rather than `lib\`, which is
+where `libsqlite3-sys` looks. Setting both variables makes its build script skip
+the search entirely (`build.rs:156`):
+
+```powershell
+[Environment]::SetEnvironmentVariable("OPENSSL_LIB_DIR",     "C:\Program Files\OpenSSL-Win64\lib\VC\x64\MD", "User")
+[Environment]::SetEnvironmentVariable("OPENSSL_INCLUDE_DIR", "C:\Program Files\OpenSSL-Win64\include",       "User")
+```
+
+Without them the build fails at `Missing environment variable OPENSSL_DIR`.
+That is an environment fault, not a code defect — see `CONTEXT.md`.
+
+### The test count is 86 on Windows, not 87
+
+`the_key_file_is_not_world_readable` in `core/src/keying.rs` is `#[cfg(unix)]`,
+so it is compiled out. The reason it is `cfg(unix)` is the part that matters:
+`write_private` applies its `0o600` restriction only on Unix. The doc comment
+says "where the platform supports it", so the limitation is stated honestly —
+but on Windows the device key file has **no permission restriction and no test
+asserting anything about it**.
+
+Do not patch this with Windows ACL code. Phase 2's first task replaces
+`development_device_key` with the OS keystore, which on Windows means DPAPI or
+Credential Manager and removes the file altogether. Fixing it in that order
+deletes the gap instead of decorating it.
+
+### The demo, in PowerShell
+
+The same run as the POSIX version above, confirmed working end to end.
+
+```powershell
+# terminal 1 — the relay
+$env:POUCH_RELAY_DB = "$env:TEMP\relay.db"; $env:POUCH_RELAY_BIND = "127.0.0.1:8551"
+.\target\debug\pouch-relay.exe
+
+# terminal 2 — two clients, two encrypted databases, one relay
+$rng = New-Object System.Security.Cryptography.RNGCryptoServiceProvider
+function New-Key { $b = New-Object byte[] 32; $rng.GetBytes($b); ($b | ForEach-Object { '{0:x2}' -f $_ }) -join '' }
+$K1 = New-Key; $K2 = New-Key
+$env:POUCH_RELAY = "http://127.0.0.1:8551"
+
+$env:POUCH_DB = "$env:TEMP\brian.db"; $env:POUCH_KEY = $K1
+.\target\debug\pouch-cli.exe create Brian
+$env:POUCH_DB = "$env:TEMP\mai.db";   $env:POUCH_KEY = $K2
+.\target\debug\pouch-cli.exe create Mai
+$CODE = (.\target\debug\pouch-cli.exe invite | Select-Object -First 1)
+
+$env:POUCH_DB = "$env:TEMP\brian.db"; $env:POUCH_KEY = $K1
+.\target\debug\pouch-cli.exe add Mai $CODE      # prints the conversation id
+$env:POUCH_DB = "$env:TEMP\mai.db";   $env:POUCH_KEY = $K2
+.\target\debug\pouch-cli.exe receive            # joins, learns Brian's name
+```
+
+Two traps, both of which fail quietly rather than loudly:
+
+- **`[RandomNumberGenerator]::Fill` does not exist in Windows PowerShell 5.1.**
+  It is .NET Core only. Use `RNGCryptoServiceProvider` as above.
+- **Assigning an empty string to `$env:POUCH_KEY` removes the variable**, and
+  the CLI then falls back to `development_device_key` without complaint. A key
+  generation failure therefore looks like a successful run against a *different*
+  keying path. Check `$K1.Length -eq 64` before trusting a run.
 
 ---
 

@@ -33,8 +33,10 @@ with it, say so and quote the section.
 
 ## Conventions that are easy to get wrong
 
-- **Git author is `Le Do Nguyen Tu <ledonguyentu@gmail.com>`.** Commits carry no
-  co-author trailers and no third-party attribution of any kind.
+- **Git author is `Brian <188601252+LeDoNguyenTu@users.noreply.github.com>`** —
+  the GitHub noreply address, deliberately, so the owner's real address stays
+  out of public commit metadata. Commits carry no co-author trailers and no
+  third-party attribution of any kind.
 - **Branch:** `develop`. Push after each phase.
 - **Pin every dependency with `=`.** Record any version change in
   `docs/DECISIONS.md`. `openmls` breaks its API across minor versions.
