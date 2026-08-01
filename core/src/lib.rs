@@ -12,14 +12,21 @@
 
 #![deny(missing_docs)]
 
+/// The only surface clients touch.
+pub mod api;
 /// Attachment pipeline: per-file keys, metadata stripping, padding (Phase 3).
 pub mod attachments;
 /// MLS integration, identity keys, safety numbers (Phase 1).
 pub mod crypto;
+/// The per-message record of what actually happened (SPEC §6.5).
+pub mod manifest;
 /// SQLCipher access, retention, backup (Phase 1–2).
 pub mod storage;
 /// TLS with SPKI pinning, offline queue, Tor (Phase 1 and 4).
 pub mod transport;
 
-/// The version of the specification this build implements.
-pub const SPEC_PHASE: u8 = 0;
+pub use api::{ApiError, ConversationSummary, IdentityState, Message, Pouch, SecurityDetails};
+
+/// The build phase this crate implements. Anything above this is documented
+/// intent, not working software.
+pub const SPEC_PHASE: u8 = 1;

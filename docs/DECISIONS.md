@@ -539,3 +539,122 @@ entry says "to be revisited" rather than "settled".
 snapshot goes into the same SQLCipher database, under the same key, as
 everything else. A test asserts message plaintext does not survive inside the
 snapshot.
+
+---
+
+## D-024 — One SQLCipher build for the workspace, and a runtime check that it is real
+**Date:** 2026-08-01 · **Status:** accepted · **Bug found during development**
+
+**What went wrong.** The relay was given `rusqlite` with the `bundled` feature
+(plain SQLite, since the relay database holds nothing worth protecting, D-019)
+and the core was given the same crate under an alias with
+`bundled-sqlcipher`. Cargo unifies features across a workspace for a single
+package version, so the two collapsed into one library built with the union of
+the features — and the plain SQLite build won.
+
+**Why this was dangerous rather than merely broken.** SQLite silently ignores
+pragmas it does not recognise. On the resulting build, `PRAGMA key` returned
+success, reported no error anywhere, and encrypted nothing. Every local database
+written was plaintext on disk — message bodies and the identity private key —
+while the application, its logs, and its error handling all reported an
+encrypted store.
+
+Nothing in the code was wrong. The dependency graph was wrong, and the symptom
+was invisible from inside the program.
+
+**Two changes.**
+
+1. **One `rusqlite` for the workspace**, built with `bundled-sqlcipher`. The
+   relay links the same library and simply never sets a key, which is exactly
+   the behaviour D-019 asks for — its database is unencrypted because there is
+   nothing in it to protect, not because it failed to be encrypted.
+
+2. **A runtime check, before the key is set.** `LocalStore::open` queries
+   `PRAGMA cipher_version`, which only SQLCipher answers, and returns
+   `StorageError::SqlCipherMissing` if it is absent. A hard failure, not a
+   warning: an application that cannot encrypt its database must refuse to
+   write to it rather than carry on and produce a plaintext file the user
+   believes is protected.
+
+**The general lesson, recorded because it will recur.** A security control that
+fails *silently* is worse than one that is absent, because the absent one is
+visible. Anywhere this project depends on a library actually doing something,
+there should be a positive check that it did — not an assumption that an error
+would have been raised. The test asserting that message plaintext is not present
+in the database file is what caught this; a test asserting only that
+`open()` returned `Ok` would have passed.
+
+---
+
+## D-025 — The identity private key lives in exactly one place
+**Date:** 2026-08-01 · **Status:** accepted
+
+**Decision.** The identity row in the local database holds the display name, the
+inbox address, and the **public** key. The private half is written into the MLS
+storage provider by `Identity::create` and travels inside the `mls_state`
+snapshot, and is read back with `SignatureKeyPair::read`.
+
+**Why not a `signer_secret` column.** The first implementation had one, which
+meant the private key existed twice in the same file — once in its own column
+and once inside the snapshot. Two copies means two things to zeroize, two things
+to wipe, and a way for them to disagree. It also required
+`SignatureKeyPair::private()`, which `openmls_basic_credential` gates behind its
+`test-utils` feature; enabling a test feature in a shipped build to extract a
+private key is the wrong direction of travel.
+
+**What this buys.** One copy, one lifetime, and the extraction path is the
+library's own public accessor rather than a reconstruction from bytes stored
+alongside.
+
+---
+
+## D-026 — The sender introduces themselves inside the encrypted channel
+**Date:** 2026-08-01 · **Status:** accepted
+
+**Decision.** After creating a conversation, the initiator sends a `Hello`
+payload — their inbox address and display name — as an ordinary encrypted
+application message. The recipient learns where to reply from that, not from
+anything attached to the Welcome.
+
+**The problem it solves.** An MLS Welcome carries no inbox address, so a client
+that joins from one has no way to reply.
+
+**The obvious solution, and why it was rejected.** Wrapping the Welcome in a
+small envelope carrying the sender's inbox would work and is one line of code.
+It would also hand the relay the exact correlation the whole architecture denies
+it: *this inbox is talking to that inbox*. The relay stores no sender field
+precisely so it cannot answer that question, and putting the answer in the blob
+would make the omission decorative.
+
+**Consequence for message ordering.** Blobs come back from the relay in
+random-identifier order — deliberately, since any other order leaks arrival
+sequence — so a message can arrive before the Welcome that opens its
+conversation. `receive_messages` therefore processes Welcomes in a pass of their
+own before attempting to decrypt anything.
+
+**A `Hello` does not make a contact verified.** It arrives over an authenticated
+channel, so the relay cannot have forged it, but authenticity of the channel is
+not identity of the person. The contact is stored unverified and the Custody
+Strip shows amber until the user compares a safety number out of band.
+
+---
+
+## D-027 — Conversations are rebuilt from MLS state on open
+**Date:** 2026-08-01 · **Status:** accepted · **Bug found during development**
+
+**What went wrong.** An `MlsGroup` is a state machine held in memory, and the
+first working build only ever put one there when a conversation was created or
+joined. The MLS state persisted correctly into SQLCipher, but the in-memory map
+was empty on every restart, so the first end-to-end run failed with "no
+conversation with that contact exists yet" immediately after successfully
+creating one.
+
+**The fix.** `Pouch::open` walks the stored conversations and reconstitutes each
+group with `MlsGroup::load` from the restored provider.
+
+**Why it is worth an entry.** The failure looked like data loss and was not — the
+keys and the ratchet state were all present and correct on disk. Persisting
+state and *rehydrating* it are separate pieces of work, and having done the
+first one well is what makes it easy to forget the second. The end-to-end run
+caught it; no unit test would have, because every unit test held its
+conversation in memory for the length of the test.

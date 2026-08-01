@@ -13,6 +13,7 @@ pouch-core = { path = "../../core" }
 tokio = { workspace = true, features = ["full"] }
 anyhow.workspace = true
 serde_json.workspace = true
+hex.workspace = true
 
 [lints.rust]
 unsafe_code = "forbid"

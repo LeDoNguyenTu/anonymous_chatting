@@ -7,9 +7,10 @@
 use super::{provider::PouchProvider, CryptoError, Identity, InviteCode, CIPHERSUITE};
 use openmls::prelude::{
     tls_codec::{Deserialize as _, Serialize as _},
-    MlsGroup, MlsGroupCreateConfig, MlsGroupJoinConfig, MlsMessageBodyIn, MlsMessageIn,
+    GroupId, MlsGroup, MlsGroupCreateConfig, MlsGroupJoinConfig, MlsMessageBodyIn, MlsMessageIn,
     ProcessedMessageContent, ProtocolMessage, StagedWelcome,
 };
+use openmls_traits::OpenMlsProvider;
 
 /// Padding applied by MLS to every application message, in bytes.
 ///
@@ -99,6 +100,49 @@ impl Conversation {
             },
             welcome_bytes,
         ))
+    }
+
+    /// Reloads a conversation whose MLS state is already in the provider.
+    ///
+    /// An `MlsGroup` is a state machine, not a record, so it is held in memory
+    /// while a client runs and rebuilt here on open. Without this every restart
+    /// would lose every conversation even though the protocol state survived in
+    /// the database — which is exactly the bug the first end-to-end run hit.
+    pub fn load(
+        group_id_hex: &str,
+        peer_inbox_id: &str,
+        peer_public_key: &[u8],
+        provider: &PouchProvider,
+    ) -> Result<Option<Self>, CryptoError> {
+        let raw = hex::decode(group_id_hex).map_err(|_| CryptoError::StateSerialization)?;
+        let group_id = GroupId::from_slice(&raw);
+
+        let group = MlsGroup::load(provider.storage(), &group_id)
+            .map_err(|_| CryptoError::StateSerialization)?;
+
+        Ok(group.map(|group| Self {
+            group,
+            peer_inbox_id: peer_inbox_id.to_string(),
+            peer_public_key: peer_public_key.to_vec(),
+        }))
+    }
+
+    /// The other member's identity key, read from the group itself.
+    ///
+    /// Used after joining from a Welcome, where the peer's details are not
+    /// known in advance — the group is the only source for them, and it is an
+    /// authenticated one.
+    pub fn peer_credential(&self, own_public_key: &[u8]) -> Option<Vec<u8>> {
+        self.group
+            .members()
+            .map(|m| m.credential.serialized_content().to_vec())
+            .find(|key| key != own_public_key)
+    }
+
+    /// Sets the peer's inbox address once it is known.
+    pub fn set_peer(&mut self, inbox_id: &str, public_key: &[u8]) {
+        self.peer_inbox_id = inbox_id.to_string();
+        self.peer_public_key = public_key.to_vec();
     }
 
     /// Joins a conversation from a Welcome that arrived in the inbox.

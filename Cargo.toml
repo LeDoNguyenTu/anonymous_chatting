@@ -35,7 +35,19 @@ zeroize = { version = "=1.8.1", features = ["zeroize_derive"] }
 # `bundled` builds SQLite from source so the relay does not inherit whatever
 # version the host happens to ship. The relay database is deliberately NOT
 # SQLCipher — see DECISIONS.md D-019.
-rusqlite = { version = "=0.32.1", features = ["bundled"] }
+# One rusqlite for the whole workspace, built with SQLCipher.
+#
+# It cannot be two. Cargo unifies features across a workspace for a single
+# package version, so declaring a plain `bundled` build alongside a
+# `bundled-sqlcipher` one produces one library with the union of the features —
+# and the plain SQLite build wins. The result is a `PRAGMA key` that is silently
+# ignored, because SQLite ignores pragmas it does not recognise, and a database
+# the application believes is encrypted and which is not. See D-024.
+#
+# The relay links the same library and simply never sets a key, which is the
+# behaviour D-019 wants: its database holds nothing worth protecting and must
+# not pretend otherwise.
+rusqlite = { version = "=0.32.1", features = ["bundled-sqlcipher"] }
 
 # --- transport / server ---------------------------------------------------
 axum = "=0.7.9"
