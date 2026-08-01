@@ -1,0 +1,110 @@
+.manifest { margin-top: var(--space-2); }
+
+.manifest__summary {
+  display: block;
+  width: 100%;
+  min-height: auto;
+  padding: var(--space-1) 0;
+  background: none;
+  border: 0;
+  text-align: left;
+  font-size: var(--text-12);
+  color: var(--fg-mute);
+}
+
+.manifest--failed .manifest__summary { color: var(--fg-alarm); }
+
+.manifest__detail {
+  margin-top: var(--space-2);
+  padding: var(--space-4);
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.manifest__title,
+.relay-vis__title {
+  font-size: var(--text-12);
+  letter-spacing: 0.08em;
+  color: var(--fg-mute);
+  margin-bottom: var(--space-3);
+}
+
+.manifest__stages { list-style: none; margin: 0; padding: 0; }
+
+.manifest__stage {
+  display: grid;
+  grid-template-columns: 2rem 11rem 1fr;
+  gap: var(--space-2);
+  padding: 2px 0;
+  font-size: var(--text-12);
+  align-items: baseline;
+}
+
+/* A stage that did not run is muted, never hidden. An absent stage is itself
+   information (SPEC §6.5.1). */
+.manifest__stage--idle .manifest__label,
+.manifest__stage--idle .manifest__value { color: var(--fg-mute); }
+
+.manifest__number { color: var(--fg-verified); }
+.manifest__label { color: var(--fg-mute); }
+.manifest__value { color: var(--fg-body); word-break: break-word; }
+
+.manifest__count {
+  margin-top: var(--space-3);
+  font-size: var(--text-12);
+  color: var(--fg-mute);
+}
+
+.manifest__relay-open {
+  margin-top: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-12);
+  background: var(--bg-raised);
+  color: var(--fg-body);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.manifest__error { margin-top: var(--space-3); font-size: var(--text-12); color: var(--fg-alarm); }
+
+.relay-vis {
+  margin-top: var(--space-4);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border);
+}
+
+.relay-vis__facts {
+  display: grid;
+  grid-template-columns: 8rem 1fr;
+  gap: 2px var(--space-3);
+  font-size: var(--text-12);
+  margin-bottom: var(--space-3);
+}
+
+.relay-vis__facts dt { color: var(--fg-mute); }
+.relay-vis__facts dd { margin: 0; color: var(--fg-body); }
+
+.relay-vis__heading {
+  font-size: var(--text-12);
+  letter-spacing: 0.08em;
+  color: var(--fg-mute);
+  margin-top: var(--space-3);
+}
+
+/* The leak block is the one the reader most needs and most easily skips. */
+.relay-vis__heading--leak { color: var(--fg-pending); }
+
+.relay-vis__list {
+  margin: var(--space-1) 0 0;
+  padding-left: var(--space-4);
+  font-size: var(--text-12);
+  color: var(--fg-body);
+  line-height: 1.6;
+}
+
+@media (max-width: 460px) {
+  .manifest__stage { grid-template-columns: 1.6rem 1fr; }
+  .manifest__value { grid-column: 2; }
+  .relay-vis__facts { grid-template-columns: 1fr; }
+}

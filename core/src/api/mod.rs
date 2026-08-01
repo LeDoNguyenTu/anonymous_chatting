@@ -212,3 +212,19 @@ fn now() -> u64 {
 
 /// Re-exported so clients can render a manifest without reaching into a module.
 pub use crate::manifest::{Stage, StageOutcome};
+
+#[cfg(test)]
+mod thread_safety {
+    use super::Pouch;
+
+    /// The desktop shell keeps one `Pouch` in Tauri-managed state behind a
+    /// mutex, which requires `Send`. That crate needs GTK to compile and so
+    /// cannot be built on a headless machine — this assertion checks the
+    /// assumption here, where it builds everywhere, instead of discovering it
+    /// in CI twenty minutes later.
+    #[test]
+    fn pouch_is_send() {
+        fn assert_send<T: Send>() {}
+        assert_send::<Pouch>();
+    }
+}

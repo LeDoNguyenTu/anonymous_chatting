@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Pouch desktop client. UI only — all security logic lives in the Rust core.",
+  "description": "Pouch desktop client. UI only \u2014 all security logic lives in the Rust core.",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
@@ -14,7 +14,8 @@
   },
   "dependencies": {
     "react": "18.3.1",
-    "react-dom": "18.3.1"
+    "react-dom": "18.3.1",
+    "@tauri-apps/api": "2.1.1"
   },
   "devDependencies": {
     "@tauri-apps/cli": "2.1.0",

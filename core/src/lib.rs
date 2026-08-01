@@ -18,6 +18,8 @@ pub mod api;
 pub mod attachments;
 /// MLS integration, identity keys, safety numbers (Phase 1).
 pub mod crypto;
+/// Where the local database key comes from.
+pub mod keying;
 /// The per-message record of what actually happened (SPEC §6.5).
 pub mod manifest;
 /// SQLCipher access, retention, backup (Phase 1–2).
