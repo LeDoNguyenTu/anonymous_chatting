@@ -9,7 +9,7 @@
  * cautious value rather than an optimistic guess.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { CustodyStrip } from "../components/CustodyStrip";
 import type {
   IdentityState,
@@ -58,6 +58,72 @@ interface Outgoing {
   manifest?: SendResult;
 }
 
+/** The prefix `core::api::attachments::attachment_placeholder` writes. A
+ * message with this body carries an attachment fetchable by its id — see
+ * SPEC §7.1, §6.7.8. */
+const ATTACHMENT_PREFIX = "[attachment] ";
+
+/** The image formats the core will strip metadata from and accept (D-038).
+ * Video is refused with an honest error rather than sent unstripped. */
+const ACCEPTED_ATTACHMENT_TYPES = "image/jpeg,image/png,image/webp";
+
+/**
+ * Fetches and renders one attachment's stripped content.
+ *
+ * Loads on demand rather than the conversation loading every attachment
+ * up front — a thread can hold many images, and nothing here needs them
+ * until they are on screen.
+ */
+function AttachmentImage({
+  bridge,
+  messageId,
+  fallbackLabel,
+}: {
+  bridge: PouchBridge;
+  messageId: string;
+  fallbackLabel: string;
+}) {
+  const [url, setUrl] = useState<string | null>(null);
+  const [filename, setFilename] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let objectUrl: string | null = null;
+    let cancelled = false;
+
+    bridge
+      .attachment(messageId)
+      .then((a) => {
+        if (cancelled || !a) return;
+        const blob = new Blob([a.content]);
+        objectUrl = URL.createObjectURL(blob);
+        setUrl(objectUrl);
+        setFilename(a.filename);
+      })
+      .catch((e) => {
+        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
+      });
+
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [bridge, messageId]);
+
+  if (error) {
+    return <p className="screen__error">{fallbackLabel} — {error}</p>;
+  }
+  if (!url) {
+    return <p className="bubble__body">{fallbackLabel}</p>;
+  }
+  return (
+    <figure className="attachment">
+      <img className="attachment__image" src={url} alt={filename ?? fallbackLabel} />
+      <figcaption className="mono">{filename}</figcaption>
+    </figure>
+  );
+}
+
 export function Conversation({
   bridge,
   conversation,
@@ -69,6 +135,8 @@ export function Conversation({
   const [draft, setDraft] = useState("");
   const [transport, setTransport] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [attaching, setAttaching] = useState(false);
+  const fileInput = useRef<HTMLInputElement>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -122,6 +190,44 @@ export function Conversation({
     }
   }
 
+  async function attachAndSend(file: File) {
+    const id = `pending-${Date.now()}`;
+    const label = `${ATTACHMENT_PREFIX}${file.name}`;
+    setAttaching(true);
+    setPending((p) => [...p, { id, body: label, state: "sending" }]);
+
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const result = await bridge.sendAttachment(
+        conversation.id,
+        file.name,
+        bytes,
+      );
+      setPending((p) =>
+        p.map((m) =>
+          m.id === id
+            ? { ...m, state: result.failed ? "failed" : "sent", manifest: result }
+            : m,
+        ),
+      );
+      if (!result.failed) await refresh();
+    } catch (e) {
+      setPending((p) =>
+        p.map((m) =>
+          m.id === id
+            ? {
+                ...m,
+                state: "failed",
+                error: e instanceof Error ? e.message : String(e),
+              }
+            : m,
+        ),
+      );
+    } finally {
+      setAttaching(false);
+    }
+  }
+
   async function poll() {
     try {
       await bridge.receiveMessages();
@@ -168,7 +274,15 @@ export function Conversation({
             key={m.id}
             className={`bubble ${m.outgoing ? "bubble--sent" : "bubble--received"}`}
           >
-            <p className="bubble__body">{m.body}</p>
+            {m.body.startsWith(ATTACHMENT_PREFIX) ? (
+              <AttachmentImage
+                bridge={bridge}
+                messageId={m.id}
+                fallbackLabel={m.body}
+              />
+            ) : (
+              <p className="bubble__body">{m.body}</p>
+            )}
             <p className="bubble__meta mono">
               {new Date(m.at * 1000).toLocaleTimeString()}
             </p>
@@ -210,6 +324,25 @@ export function Conversation({
           onChange={(e) => setDraft(e.target.value)}
           placeholder="Write a message"
         />
+        <input
+          ref={fileInput}
+          type="file"
+          accept={ACCEPTED_ATTACHMENT_TYPES}
+          className="visually-hidden"
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            e.target.value = "";
+            if (file) void attachAndSend(file);
+          }}
+        />
+        <button
+          type="button"
+          className="button-quiet"
+          disabled={attaching}
+          onClick={() => fileInput.current?.click()}
+        >
+          {attaching ? "Sending image" : "Attach image"}
+        </button>
         <button type="submit" className="button-primary" disabled={!draft.trim()}>
           Send
         </button>

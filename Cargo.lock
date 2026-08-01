@@ -1630,7 +1630,7 @@ dependencies = [
 
 [[package]]
 name = "pouch-cli"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "hex",
@@ -1641,7 +1641,7 @@ dependencies = [
 
 [[package]]
 name = "pouch-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "argon2",
  "axum",
@@ -1671,7 +1671,7 @@ dependencies = [
 
 [[package]]
 name = "pouch-relay"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "axum",

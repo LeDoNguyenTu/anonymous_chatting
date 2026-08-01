@@ -102,6 +102,12 @@ export interface ImportBackupView {
   conversationCount: number;
 }
 
+/** A sent or received attachment's stripped content (SPEC §7.1, §6.7.8). */
+export interface AttachmentView {
+  filename: string;
+  content: Uint8Array;
+}
+
 export interface PouchBridge {
   hasIdentity(): Promise<boolean>;
   createIdentity(displayName: string): Promise<string>;
@@ -147,6 +153,16 @@ export interface PouchBridge {
     recoveryKeyHex: string,
     backup: Uint8Array,
   ): Promise<ImportBackupView>;
+
+  /* Attachments (SPEC §7.1, §6.7.8). Images only (JPEG/PNG/WebP) — a video
+   * file is refused by the core with an honest error, not silently sent
+   * unstripped (D-038). */
+  sendAttachment(
+    conversationId: string,
+    filename: string,
+    bytes: Uint8Array,
+  ): Promise<SendResult>;
+  attachment(messageId: string): Promise<AttachmentView | null>;
 }
 
 /* -- wire shapes -----------------------------------------------------------
@@ -192,6 +208,11 @@ interface WireExportBackup {
 interface WireImportBackup {
   display_name: string;
   conversation_count: number;
+}
+
+interface WireAttachment {
+  filename: string;
+  content: number[];
 }
 
 interface WireSecurityDetails {
@@ -376,6 +397,22 @@ export function tauriBridge(
       invoke<void>("set_passphrase", { passphrase }),
 
     clearPassphrase: () => invoke<void>("clear_passphrase"),
+
+    sendAttachment: async (conversationId, filename, bytes) => {
+      const r = await invoke<WireSendResult>("send_attachment", {
+        conversationId,
+        filename,
+        bytes: Array.from(bytes),
+      });
+      return { summary: r.summary, rows: r.rows, failed: r.failed };
+    },
+
+    attachment: async (messageId) => {
+      const r = await invoke<WireAttachment | null>("attachment", {
+        messageId,
+      });
+      return r ? { filename: r.filename, content: Uint8Array.from(r.content) } : null;
+    },
 
     exportBackup: async () => {
       const r = await invoke<WireExportBackup>("export_backup");

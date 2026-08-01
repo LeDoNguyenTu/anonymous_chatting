@@ -445,6 +445,67 @@ pub async fn import_backup(
     })
 }
 
+/* -- Phase 3: attachments (SPEC §7.1, §6.7.8) ------------------------------- */
+
+/// Strips, pads, encrypts, and sends an image attachment. Returns the same
+/// shape `send_message` does — the Manifest component does not need to know
+/// whether a stage 2 (strip) row is present, only how to render one.
+#[tauri::command]
+pub async fn send_attachment(
+    state: State<'_, AppState>,
+    conversation_id: String,
+    filename: String,
+    bytes: Vec<u8>,
+) -> Result<SendResult, String> {
+    let mut guard = state.lock().await;
+    let pouch = guard
+        .as_mut()
+        .ok_or_else(|| "No identity is open on this device yet.".to_string())?;
+
+    let manifest = pouch
+        .send_attachment(&conversation_id, &filename, &bytes)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(SendResult {
+        summary: manifest.summary(),
+        rows: manifest
+            .stages()
+            .iter()
+            .map(|(stage, outcome)| ManifestRow {
+                number: stage.number(),
+                label: stage.label().to_string(),
+                detail: outcome.detail(),
+                ran: outcome.ran(),
+            })
+            .collect(),
+        failed: manifest.failure().is_some(),
+    })
+}
+
+/// What the conversation view needs to render a stored attachment.
+#[derive(Serialize)]
+pub struct AttachmentView {
+    pub filename: String,
+    pub content: Vec<u8>,
+}
+
+/// The stripped content of a sent or received attachment, if `message_id`
+/// carries one. `None` for an ordinary text message.
+#[tauri::command]
+pub async fn attachment(
+    state: State<'_, AppState>,
+    message_id: String,
+) -> Result<Option<AttachmentView>, String> {
+    state
+        .with(|p| {
+            Ok(p.attachment(&message_id)
+                .map_err(|e| e.to_string())?
+                .map(|(filename, content)| AttachmentView { filename, content }))
+        })
+        .await
+}
+
 /// Seconds since the epoch, for a backup file name that sorts and does not
 /// collide across exports in the same session.
 fn unix_seconds() -> u64 {

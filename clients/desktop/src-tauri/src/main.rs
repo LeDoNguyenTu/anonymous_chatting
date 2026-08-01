@@ -47,6 +47,8 @@ fn main() {
             commands::clear_passphrase,
             commands::export_backup,
             commands::import_backup,
+            commands::send_attachment,
+            commands::attachment,
         ])
         .run(tauri::generate_context!())
         .expect("failed to start the Pouch window");

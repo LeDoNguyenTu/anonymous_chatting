@@ -3145,7 +3145,7 @@ dependencies = [
 
 [[package]]
 name = "pouch-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "argon2",
  "base64 0.22.1",
@@ -3172,7 +3172,7 @@ dependencies = [
 
 [[package]]
 name = "pouch-desktop"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "hex",
  "pouch-core",

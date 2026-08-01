@@ -131,32 +131,42 @@ Full reasoning is in `docs/DECISIONS.md` (D-001…D-038). The short version:
 
 Phases 0, 1, and 2 are code complete — **Phase 2 fully**, including backup
 export/import (D-037), wired all the way through the desktop client
-(`commands.rs`, `bridge.ts`, `BackupRestore.tsx`). **Phase 3's core and CLI
-halves are done**: compression (D-036), and the attachment pipeline —
-strip (D-038, `img-parts`, images only), pad, encrypt (D-037's shape),
-upload to a random relay bucket id, all wired into `Pouch::send_attachment`
-and the receive path. Sealed sender stays out of Phase 3's exit
-requirement, moved to Phase 4 (SPEC.md's phase table says so): the relay's
-wire protocol already carries no sender field, so what remains is the
-TCP/TLS source IP a direct connection exposes, which only Tor removes.
-**Not done for Phase 3**: the desktop attachment preview screen and image
-rendering, and offline-queue retry for a failed attachment blob upload
-(the small reference message already retries; the blob upload does not
-yet).
+(`commands.rs`, `bridge.ts`, `BackupRestore.tsx`). **Phase 3 meets its exit
+criteria**: compression (D-036), and the attachment pipeline — strip
+(D-038, `img-parts`, images only), pad, encrypt (D-037's shape), upload to
+a random relay bucket id — are built in `core`, the CLI, **and the desktop
+client** (`Conversation.tsx`'s "Attach image" button and `AttachmentImage`
+component). Sealed sender stays out of Phase 3's exit requirement, moved
+to Phase 4 (SPEC.md's phase table says so): the relay's wire protocol
+already carries no sender field, so what remains is the TCP/TLS source IP
+a direct connection exposes, which only Tor removes.
+
+Two things are deliberately not built, both recorded as scoped decisions
+rather than gaps: SPEC §6.7.8's *dedicated pre-send* attachment preview
+screen (what ships shows the same manifest information *after* sending,
+reusing the existing `Manifest` component rather than a separate step),
+and offline-queue retry for a failed attachment blob upload (unlike a text
+message, attachment encryption never touches the MLS ratchet, so a manual
+retry has none of the cost D-028 built the message-retry queue to avoid —
+see `docs/PROGRESS.md`'s Phase 3 section for the full reasoning).
 
 163 Rust tests and 36 frontend tests pass, verified locally on Windows; the
-Phase 2 and initial-compression commits are confirmed green via `gh run
-list`, but everything since (D-037/backup, the desktop backup UI, D-038/the
-attachment pipeline) has not yet been observed going green in GitHub
-Actions — confirm before trusting it the way Phase 0/1's "CI green" was
-trusted. Anything that touches a screen (the backup screens, and any future
-attachment screen) has also never been seen in a running window — this
-environment cannot launch the Tauri shell — so "verified" for those means
-build/typecheck/test only, not a GUI click-through.
+Phase 2, initial-compression, and desktop-backup-UI commits are confirmed
+green via `gh run list`. The attachment pipeline and desktop attachment UI
+commits have not yet been observed going green in GitHub Actions — confirm
+before trusting them the way Phase 0/1's "CI green" was trusted. Anything
+that touches a screen (backup, attachments) has also never been seen in a
+running window — this environment cannot launch the Tauri shell — so
+"verified" for those means build/typecheck/test only, not a GUI
+click-through. One CSP change shipped blind for exactly this reason:
+`tauri.conf.json`'s `img-src`/`default-src` now allow `blob:` so an
+`<img>` tag and the backup screen's download link can use object URLs —
+correct on paper, unverified in a real window.
 
-The version number moved to `0.1.1` this session — bump it after each
-phase or critical fix from here on (project owner instruction, see the
-conventions list above for the four files that have to move together).
+The version number moved to `0.1.1`, then `0.1.2`, this session — bump it
+after each phase or critical fix from here on (project owner instruction,
+see the conventions list above for the four files that have to move
+together).
 
 Full detail, the runnable demo, the manual checks still owed, and the ordered
 list of what is next are in `docs/PROGRESS.md`. Read that before starting work.

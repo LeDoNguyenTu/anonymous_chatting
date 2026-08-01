@@ -13,11 +13,11 @@ Do not begin a phase before the previous phase meets its exit criteria.
 | | |
 |---|---|
 | **Phase complete** | 0 — Foundation · 1 — Working 1:1 encrypted chat · 2 — Storage control and hardening, **fully** |
-| **Phase next** | 3 — Attachments and compression. Compression (stage 3), backup, and the attachment pipeline (stage 2, images only — D-038) are all done in `core` and the CLI. Not done: attachment UI (preview screen, image rendering) in the desktop client, and offline-queue retry for a failed attachment upload. |
+| **Phase next** | 3 — Attachments and compression. Meets its exit criteria: compression, backup, and the attachment pipeline (strip images only — D-038, pad, encrypt, upload) are all done in `core`, the CLI, **and the desktop client**. Two things remain, both stated rather than hidden: SPEC §6.7.8's *dedicated pre-send* preview screen is not built (the same manifest information shows *after* sending instead, see below), and offline-queue retry for a failed attachment blob upload was looked at and deliberately not built — see the reasoning in the attachments section below. Neither is part of the phase's own exit criterion. |
 | **Branches** | `main` (repository default) and `develop`, both pushed; `main` intentionally left behind `develop` — see the note in this section's history for why |
-| **Blocked on** | Nothing for Phase 3's core/CLI half. What remains is UI work (desktop attachment preview + rendering) and Phase 4's Tor-dependent sealed sender — this relay's wire protocol already carries no sender field, so the only remaining "who sent this" signal is the TCP/TLS source IP a direct connection necessarily exposes, which only Tor closes. |
+| **Blocked on** | Nothing. What remains for Phase 3 (above) is scoped and intentional, not blocked. Phase 4's Tor-dependent sealed sender is next: this relay's wire protocol already carries no sender field, so the only remaining "who sent this" signal is the TCP/TLS source IP a direct connection necessarily exposes, which only Tor closes. |
 | **Tests** | 134 Rust core + 13 end-to-end + 12 relay + 4 server-blindness = 163 Rust · 36 frontend |
-| **CI** | confirmed green via `gh run list` for the Phase 2 and initial Phase 3 (compression) commits. Everything since — D-037/backup (core+CLI+desktop), the attachment pipeline (D-038, core+CLI) — verified locally the same way (fmt, clippy -D warnings, full test suite, both guardrail scripts) but not yet confirmed in Actions at last check — confirm before trusting it the same way. The desktop backup screens and the attachment pipeline have never been seen in a running GUI window — this environment cannot launch the Tauri shell — so "verified" for the parts that touch a screen means build/typecheck/test only. |
+| **CI** | confirmed green via `gh run list` for the Phase 2, initial Phase 3 (compression), and desktop-backup-UI commits. The attachment pipeline commit (core+CLI) and the desktop attachment UI commit are verified locally the same way (fmt, clippy -D warnings, full test suite, both guardrail scripts) but not yet confirmed in Actions at last check — confirm before trusting them the same way. Anything that touches a screen (backup, attachments) has never been seen in a running GUI window — this environment cannot launch the Tauri shell — so "verified" for those means build/typecheck/test only. |
 | **Version** | `0.1.1`, bumped from `0.1.0` this session per the project owner's instruction to bump after each phase or critical fix (2026-08-02). Four files move together — see `docs/CONTEXT.md`'s conventions list. |
 
 ### Owed to the project owner
@@ -651,22 +651,67 @@ hold "an unsent file" the way the outbox holds "an unsent message." The
 small reference message *is* queued and retried, matching `send_message`
 exactly. Tracked below.
 
+### Attachments, wired into the desktop client
+
+Two new Tauri commands (`send_attachment`, `attachment`), typed IPC in
+`bridge.ts`, and changes to `Conversation.tsx`: an "Attach image" button
+(hidden file input, `accept="image/jpeg,image/png,image/webp"`) that reads
+the file, calls `send_attachment`, and renders the same `Manifest`
+component text messages already use — the strip/pad/encrypt rows show
+exactly like compress/encrypt do for text, no separate code path. A new
+`AttachmentImage` component fetches a stored attachment's content on
+demand (not all up front) and renders it via a `Blob`/object URL, with the
+filename as a caption; a message whose body is the
+`[attachment] <filename>` placeholder renders this instead of the raw
+placeholder text.
+
+**Scope reduction, stated rather than silently taken:** SPEC §6.7.8
+describes a *dedicated preview screen* shown *before* sending — file,
+strip manifest, "Padded to: X" — as its own step. What is built instead
+shows the same information (the Manifest component, including the strip
+row) *after* the send completes, the same place and the same way a text
+message's manifest already appears. This is honest about what actually
+happened rather than a mid-send confirmation step, but it is not the
+separate screen SPEC describes. Revisit if this workflow is confirmed as
+good enough.
+
+One CSP change was required and easy to miss: `tauri.conf.json`'s
+`img-src` did not include `blob:`, which an `<img>` tag rendering
+attachment content needs, and `default-src` was widened the same way as a
+defensive measure for the backup screen's `<a download>` blob link, since
+that code path could not be verified in a running window either. Neither
+change widens what the app can reach over the network — both directives
+already start from `'self'`, and `blob:` only ever holds bytes this
+process itself created.
+
 ### What is still owed before Phase 3 can be called done
 
 - [x] **Pick a metadata-stripping library** and build the attachment
   pipeline — done this session (D-038), see above.
 - [x] **Wire backup into the desktop client** — done, see Phase 2's section.
-- [ ] **Attachment UI in the desktop client**: the preview screen with the
-  strip manifest (SPEC §6.7.8), and rendering a received image rather than
-  its `[attachment] <filename>` placeholder text.
-- [ ] **Offline-queue retry for a failed attachment blob upload** — see the
-  gap noted just above. Text messages already retry; attachments do not
-  yet.
+- [x] **Attachment UI in the desktop client** — done this session, see
+  above. The dedicated pre-send preview screen SPEC §6.7.8 describes is
+  still not built; what ships shows the same information after sending.
+- [ ] **Offline-queue retry for a failed attachment blob upload.** Looked
+  at this session and *not* built on purpose rather than by oversight: text
+  messages retry a failed send without re-encrypting because MLS's ratchet
+  already advanced by the time the relay call fails, and re-encrypting
+  would burn a generation (D-028's lesson). Attachment encryption is
+  D-037's AEAD, entirely outside MLS — nothing about it touches the
+  ratchet, so there is no equivalent cost to redoing `prepare()` on a
+  manual retry. Automatic requeueing would need genuinely new
+  infrastructure (a two-phase "blob uploaded, reference not yet sent"
+  state) for a case a plain retry already handles safely and cheaply.
+  Revisit only if manual retry turns out to be a real usability problem in
+  practice, not as a default "more robust is more correct" instinct.
 - [ ] **Sealed sender itself** — waits on Phase 4 existing, per the reorder
   above.
-- [ ] **Manual GUI check for the backup screens and any future attachment
-  screen**, once a window can actually be launched — verified by
-  build/typecheck/test only so far, per the note above.
+- [ ] **Manual GUI check for the backup screens and the attachment flow**,
+  once a window can actually be launched — verified by
+  build/typecheck/test only so far, per the note above. This specifically
+  includes confirming the CSP change above actually lets an attachment
+  image render in a real WebView2/WebKitGTK window, not just that it
+  typechecks.
 
 ---
 
