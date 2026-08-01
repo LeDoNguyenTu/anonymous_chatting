@@ -65,8 +65,11 @@ jobs:
       # The advisories that cannot currently be fixed are listed, each with its
       # reasoning, in .cargo/audit.toml. That file is the audit's exception
       # list and is reviewed whenever openmls is upgraded.
-      - name: Install cargo-audit
-        run: cargo install cargo-audit --locked
+      # A prebuilt binary. `cargo install cargo-audit` compiles it from source on
+      # every run, which took over five minutes and dominated the job.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
       - name: Audit dependencies
         run: cargo audit
 
