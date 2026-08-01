@@ -8,6 +8,7 @@
 //!
 //! Nothing in this module logs a key, a passphrase, or message content.
 
+mod attachments;
 mod contacts;
 mod error;
 mod identity;
@@ -19,7 +20,8 @@ mod types;
 
 pub use error::StorageError;
 pub use types::{
-    Direction, IdentityChange, QueuedMessage, RetentionPolicy, StoredContact, StoredMessage,
+    Direction, IdentityChange, QueuedMessage, RetentionPolicy, StoredAttachment, StoredContact,
+    StoredMessage,
 };
 
 use rusqlite::{Connection, OptionalExtension};
@@ -127,6 +129,7 @@ impl LocalStore {
         // readable copy of the same text.
         self.conn.execute_batch(
             "DELETE FROM outbox;
+             DELETE FROM attachments;
              DELETE FROM identity_changes;
              DELETE FROM messages;
              DELETE FROM conversations;

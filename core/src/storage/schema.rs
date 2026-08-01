@@ -16,7 +16,8 @@ use super::{LocalStore, StorageError};
 ///
 /// 1 — Phase 1: identity, MLS state, contacts, conversations, messages.
 /// 2 — Phase 2: settings, retention, identity change history, the outbox.
-pub(super) const SCHEMA_VERSION: i64 = 2;
+/// 3 — Phase 3: received attachment content.
+pub(super) const SCHEMA_VERSION: i64 = 3;
 
 impl LocalStore {
     pub(super) fn migrate(&self) -> Result<(), StorageError> {
@@ -30,6 +31,9 @@ impl LocalStore {
         }
         if version < 2 {
             self.migrate_to_v2()?;
+        }
+        if version < 3 {
+            self.migrate_to_v3()?;
         }
 
         // Pragmas do not accept bound parameters, and this value is a constant
@@ -136,6 +140,25 @@ impl LocalStore {
         // Added rather than created, because conversations already exist.
         self.add_column_if_missing("conversations", "disappear_after", "INTEGER")?;
 
+        Ok(())
+    }
+
+    /// Phase 3: received attachment content (SPEC §7.1).
+    fn migrate_to_v3(&self) -> Result<(), StorageError> {
+        self.conn.execute_batch(
+            // Shares its primary key with the `messages` row referencing it,
+            // the same one-to-one link the outbox already uses. The content
+            // is the *stripped* image, not the original file — the original
+            // never reaches this device's peer, let alone this table.
+            "CREATE TABLE IF NOT EXISTS attachments (
+                 id              TEXT PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+                 conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+                 filename        TEXT NOT NULL,
+                 format          TEXT NOT NULL,
+                 content         BLOB NOT NULL,
+                 at              INTEGER NOT NULL
+             );",
+        )?;
         Ok(())
     }
 

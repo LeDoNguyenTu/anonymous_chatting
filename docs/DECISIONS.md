@@ -1086,3 +1086,66 @@ this session: backup export/import. The attachment pipeline's remaining
 work — EXIF/metadata stripping specifically — needs a decision of its own
 about which library handles it and whether it covers video containers (SPEC
 §7.1's own flag), so it is not automatically unblocked by this entry alone.
+See D-038 for that decision.
+
+---
+
+## D-038 — Metadata stripping via `img-parts`; video attachments deferred, not silently unsupported
+**Date:** 2026-08-02 · **Status:** accepted — project owner approved 2026-08-02
+
+**The problem.** SPEC §7.1 step 2 requires stripping EXIF, GPS, device make
+and model, capture timestamps, and editing history from every attachment,
+client-side, before encryption, "using a maintained library" and explicitly
+forbidding hand-parsed EXIF. §7.1 also names video separately: "requires
+stripping container-level metadata as well as frame metadata. Flag if the
+chosen library does not handle the container" — SPEC itself anticipates that
+one library might not cover both.
+
+**What was checked.** The Rust ecosystem for image metadata handling
+(`cargo info` against crates.io, 2026-08-02):
+
+- `img-parts` (0.4.0, MIT/Apache-2.0, `no_std`-capable, maintained by
+  paolobarbolini) edits JPEG, PNG, and RIFF (WebP) containers directly —
+  removing EXIF/ICC/XMP segments without decoding or re-encoding pixel
+  data. Three small dependencies (`bytes`, `crc32fast`, `miniz_oxide`), no
+  `unsafe`. This is squarely "a maintained library," not hand-parsed EXIF,
+  and it covers the three formats a messaging app's photo attachments are
+  overwhelmingly going to be.
+- Video has no comparable option. Metadata lives in different places per
+  container — MP4 `udta` atoms, QuickTime `©xyz` GPS atoms, embedded
+  thumbnail images carrying their own EXIF, timed-metadata tracks — and the
+  realistic choices are: a pure-Rust MP4 box parser (`mp4`, 0.14.0) that
+  does not claim to enumerate or strip the full space of metadata locations
+  and has not been used for this purpose here, or a crate wrapping FFmpeg's
+  C libraries, which means feeding attacker-controlled video through a
+  large, historically CVE-heavy native codec — a materially bigger attack
+  surface than anything else in this project's dependency graph, for a
+  library whose job would be reading untrusted, adversarial input by
+  definition.
+
+**Decision, put to the project owner rather than assumed** (SPEC §2.6: a new
+dependency with a real security trade-off, and a decision that narrows
+product scope, both warrant asking rather than defaulting). Approved:
+
+1. `img-parts` strips metadata for JPEG, PNG, and WebP. Pinned exactly in
+   `core/Cargo.toml`, workspace-level.
+2. Video attachments are **not** supported in Phase 3. The attachment
+   picker refuses video files with an honest message rather than accepting
+   them and forwarding a file whose metadata may not be fully stripped.
+   This is SPEC §7.1's own "flag if the chosen library does not handle the
+   container" clause, exercised rather than quietly skipped — the
+   difference between an absent feature and a feature that lies about what
+   it did is Prime Directive 3.
+3. Video support is a tracked, open item for a later phase, not a silent
+   gap — recorded in `docs/PROGRESS.md`.
+
+**Why this does not block Phase 3's exit criterion.** SPEC's own Phase 3
+exit line (§9) is "an image sent through the system and inspected
+server-side reveals no EXIF, no filename, no sender" — video is not named
+there. §8.4's test matrix entry does say "repeat for video," which stays
+open and unmet until video is supported; the phase gate itself does not.
+
+**What this does not open up.** `img-parts` is scoped to the attachment
+pipeline's metadata-stripping step. It is not a general "add an image
+library" precedent — anything that needs to decode or render pixel data
+(rather than edit a container's metadata segments) is a separate choice.

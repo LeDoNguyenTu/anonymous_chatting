@@ -29,6 +29,8 @@ COMMANDS
   invite                      Print an invite code to hand to someone
   add <name> <invite-code>    Start a conversation from someone's invite code
   send <conversation> <text>  Send a message
+  send-file <conv> <path>     Send a JPEG/PNG/WebP attachment, metadata stripped
+  save-attachment <id> <path> Save a received attachment's content to a file
   receive                     Collect and decrypt anything waiting
   list                        List conversations
   read <conversation>         Print a conversation
@@ -77,6 +79,8 @@ async fn main() -> Result<()> {
         "safety" => commands::contacts::safety(&args),
         "verify" => commands::contacts::verify(&args),
         "send" => commands::messaging::send(&args).await,
+        "send-file" => commands::attachments::send_file(&args).await,
+        "save-attachment" => commands::attachments::save_attachment(&args),
         "receive" => commands::messaging::receive(&args).await,
         "list" => commands::messaging::list(&args),
         "read" => commands::messaging::read(&args),

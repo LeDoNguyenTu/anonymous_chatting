@@ -115,6 +115,33 @@ impl RetentionPolicy {
     }
 }
 
+/// A received attachment's content, stored locally.
+///
+/// Holds the stripped image bytes exactly as they arrived — this is what the
+/// sender's device produced after removing EXIF/GPS/other metadata, not the
+/// original file, since the original never crosses the network. Shares its
+/// id with the `messages` row that references it (SPEC §7.1's "the file key
+/// and blob ID inside the E2EE message payload" becomes, on this side, one
+/// message row and one attachment row under the same identifier), the same
+/// pattern the outbox already uses to link ciphertext to its message.
+#[derive(Debug, Clone)]
+pub struct StoredAttachment {
+    /// Shared with the `messages` row this attachment belongs to.
+    pub id: String,
+    /// Which conversation it belongs to.
+    pub conversation_id: String,
+    /// The original filename, as the sender named it. Never sent to the
+    /// relay in any field — SPEC §7.1: "original filenames never travel
+    /// unencrypted."
+    pub filename: String,
+    /// The stripped container format, e.g. "JPEG".
+    pub format: String,
+    /// The stripped image bytes.
+    pub content: Vec<u8>,
+    /// Local receive time, seconds since the Unix epoch.
+    pub at: u64,
+}
+
 /// A message waiting for the relay to come back.
 ///
 /// Carries ciphertext. The readable body lives in the `messages` row that

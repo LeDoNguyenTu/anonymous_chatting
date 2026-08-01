@@ -9,7 +9,7 @@ use crate::crypto::{
     Conversation, CryptoError, AEAD_NAME, CIPHERSUITE_NAME, KEY_AGREEMENT_NAME, SIGNATURE_NAME,
 };
 use crate::manifest::Manifest;
-use crate::storage::{Direction, QueuedMessage, StoredContact, StoredMessage};
+use crate::storage::{Direction, QueuedMessage, StoredAttachment, StoredContact, StoredMessage};
 use crate::transport::Route;
 
 use super::compression;
@@ -287,6 +287,66 @@ impl Pouch {
                                 id: stored.id,
                                 outgoing: false,
                                 body,
+                                at: stored.at,
+                            });
+                        }
+                        Payload::Attachment {
+                            bucket_id,
+                            key,
+                            filename,
+                            format,
+                        } => {
+                            // Fetched before the message row is written, but
+                            // stored after it — `attachments.id` references
+                            // `messages.id`, so the message row has to exist
+                            // first, even though the network round trip that
+                            // can fail happens before either write.
+                            let already_have_it =
+                                self.store.has_attachment(&envelope.message_id)?;
+                            let content = if already_have_it {
+                                None
+                            } else {
+                                let Some(content) = self.fetch_attachment(&bucket_id, &key).await?
+                                else {
+                                    // Not there yet, or already collected by
+                                    // a run that crashed before storing it.
+                                    // Left unacknowledged, same as a message
+                                    // that fails to decrypt — it survives to
+                                    // the next poll rather than being lost.
+                                    continue;
+                                };
+                                Some(content)
+                            };
+
+                            let stored = StoredMessage {
+                                id: envelope.message_id.clone(),
+                                conversation_id,
+                                direction: Direction::Received,
+                                body: super::attachments::attachment_placeholder(&filename),
+                                at: now(),
+                            };
+                            self.store.put_message(&stored)?;
+
+                            // Idempotent: a crash between erasing the bucket
+                            // and acknowledging this reference must not try
+                            // to re-fetch a bucket that is now empty by
+                            // design rather than by loss — `already_have_it`
+                            // covers exactly that replay.
+                            if let Some(content) = content {
+                                self.store.put_attachment(&StoredAttachment {
+                                    id: envelope.message_id.clone(),
+                                    conversation_id: stored.conversation_id.clone(),
+                                    filename: filename.clone(),
+                                    format,
+                                    content,
+                                    at: now(),
+                                })?;
+                            }
+
+                            received.messages.push(Message {
+                                id: stored.id,
+                                outgoing: false,
+                                body: stored.body,
                                 at: stored.at,
                             });
                         }

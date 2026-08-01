@@ -1,5 +1,6 @@
 //! What a client operation can fail with.
 
+use crate::attachments::AttachmentError;
 use crate::crypto::CryptoError;
 use crate::keying::KeyingError;
 use crate::storage::StorageError;
@@ -28,6 +29,9 @@ pub enum ApiError {
     /// A backup could not be produced or restored.
     #[error(transparent)]
     Backup(#[from] BackupError),
+    /// An attachment could not be prepared or opened.
+    #[error(transparent)]
+    Attachment(#[from] AttachmentError),
     /// The named contact is not known on this device.
     #[error("no contact with that identifier exists on this device")]
     UnknownContact,

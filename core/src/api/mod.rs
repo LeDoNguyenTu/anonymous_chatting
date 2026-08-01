@@ -7,6 +7,7 @@
 //! If a client appears to need something lower level, the correct response is to
 //! add an operation here — never to expose the module underneath.
 
+mod attachments;
 mod backup;
 mod compression;
 mod contacts;

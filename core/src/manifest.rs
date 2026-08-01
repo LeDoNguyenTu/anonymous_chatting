@@ -159,6 +159,76 @@ impl Manifest {
         }
     }
 
+    /// Begins a manifest for an attachment (SPEC §7.1), rather than a text
+    /// message.
+    ///
+    /// Unlike [`Manifest::new`], stage 2 (strip) is `Pending` — an attachment
+    /// has metadata to remove, where a text message does not — and stage 3
+    /// (compress) is `NotApplicable`, since SPEC §6.5.2 scopes compression to
+    /// message payloads and an attachment is already a compact binary blob,
+    /// not text.
+    pub fn new_for_attachment(original_len: usize) -> Self {
+        Self {
+            stages: vec![
+                (
+                    Stage::Compose,
+                    StageOutcome::Ran(format!("{original_len} bytes")),
+                ),
+                (Stage::Strip, StageOutcome::Pending),
+                (
+                    Stage::Compress,
+                    StageOutcome::NotApplicable("attachment, not message text".to_string()),
+                ),
+                (Stage::Pad, StageOutcome::Pending),
+                (Stage::Encrypt, StageOutcome::Pending),
+                (Stage::Seal, StageOutcome::NotYetImplemented),
+                (Stage::Route, StageOutcome::Pending),
+                (Stage::Queue, StageOutcome::Pending),
+                (Stage::Deliver, StageOutcome::Pending),
+            ],
+        }
+    }
+
+    /// Records what metadata stripping actually found and removed.
+    ///
+    /// Names what was removed rather than asserting "metadata removed"
+    /// unconditionally — SPEC §8.6's rule applies here too: a stage that
+    /// reports success it did not perform is worse than an honest "nothing
+    /// found."
+    pub fn stripped(
+        &mut self,
+        format: &str,
+        exif_removed: bool,
+        icc_removed: bool,
+        other_removed: bool,
+    ) {
+        let mut removed = Vec::new();
+        if exif_removed {
+            removed.push("EXIF");
+        }
+        if icc_removed {
+            removed.push("ICC");
+        }
+        if other_removed {
+            removed.push("other metadata");
+        }
+
+        let detail = if removed.is_empty() {
+            format!("{format} · no metadata found")
+        } else {
+            format!("{format} · removed {}", removed.join(", "))
+        };
+        self.set(Stage::Strip, StageOutcome::Ran(detail));
+    }
+
+    /// Records that padding ran, naming the size change.
+    pub fn padded(&mut self, before: usize, after: usize) {
+        self.set(
+            Stage::Pad,
+            StageOutcome::Ran(format!("{before} → {after} bytes")),
+        );
+    }
+
     fn set(&mut self, stage: Stage, outcome: StageOutcome) {
         if let Some(slot) = self.stages.iter_mut().find(|(s, _)| *s == stage) {
             slot.1 = outcome;

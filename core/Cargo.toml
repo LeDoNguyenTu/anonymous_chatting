@@ -26,6 +26,7 @@ rusqlite.workspace = true
 reqwest.workspace = true
 tokio.workspace = true
 zstd.workspace = true
+img-parts.workspace = true
 
 base64.workspace = true
 hex.workspace = true

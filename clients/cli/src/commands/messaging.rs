@@ -42,6 +42,12 @@ pub async fn receive(_args: &[String]) -> Result<()> {
     }
     for message in &received.messages {
         println!("{}", message.body);
+        if message.body.starts_with("[attachment]") {
+            println!(
+                "  id: {}  (pouch-cli save-attachment {} <path>)",
+                message.id, message.id
+            );
+        }
     }
     Ok(())
 }
@@ -76,6 +82,12 @@ pub fn read(args: &[String]) -> Result<()> {
     for message in pouch.messages(conversation)? {
         let who = if message.outgoing { "you" } else { "them" };
         println!("{who:>5}  {}", message.body);
+        if message.body.starts_with("[attachment]") {
+            println!(
+                "       id: {}  (pouch-cli save-attachment {} <path>)",
+                message.id, message.id
+            );
+        }
     }
     Ok(())
 }

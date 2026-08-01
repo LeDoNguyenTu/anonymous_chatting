@@ -637,7 +637,9 @@ Attachment pipeline per §7.1. Attachment preview screen with the strip manifest
 
 Sealed sender (manifest stage 6) was originally scoped here but is **not** a Phase 3 exit requirement — see the note under Phase 4 for why, decided 2026-08-02. Everything else in this phase does not depend on Tor and proceeds on its own schedule.
 
-**Exit:** metadata stripping test (§8.4) and padding test (§8.5) pass. An image sent through the system and inspected server-side reveals no EXIF, no filename, no sender.
+**Attachments are images only in this phase** (JPEG, PNG, WebP) — decided 2026-08-02, D-038. §7.1's metadata-stripping library, `img-parts`, edits those three container formats directly and has no unsafe code; no comparably safe option exists for video, where metadata hides across multiple container-specific locations and the realistic alternative is wrapping FFmpeg's C libraries against attacker-controlled input. This is §7.1's own "flag if the chosen library does not handle the container" clause, exercised rather than skipped: the attachment picker refuses video with an honest message instead of forwarding one whose metadata may not be fully stripped. Video attachment support is a tracked, open item for a later phase.
+
+**Exit:** metadata stripping test (§8.4, image formats) and padding test (§8.5) pass. An image sent through the system and inspected server-side reveals no EXIF, no filename, no sender. §8.4's video case stays open until video attachments are built.
 
 ### Phase 4 — Tor transport, then sealed sender (≈2 weeks + sealed sender)
 Relay as an onion service. `arti` embedded in core. Transport settings screen. Fixed-size padding, optional cover traffic. Threat model updated to reflect what changed.

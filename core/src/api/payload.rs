@@ -26,4 +26,27 @@ pub(crate) enum Payload {
     },
     /// An ordinary message.
     Text(String),
+    /// A reference to an attachment uploaded separately (SPEC §7.1 step 6).
+    ///
+    /// The attachment ciphertext itself never travels through this payload —
+    /// it is already uploaded to `bucket_id`, a random relay identifier of
+    /// its own, unrelated to either party's inbox. Only the small reference
+    /// travels through the encrypted channel: where to fetch it and the key
+    /// to open it. This keeps a multi-megabyte blob out of the same queue
+    /// slot text messages use, without adding any relay endpoint — `bucket_id`
+    /// is just another opaque identifier the existing three-endpoint relay
+    /// already knows how to hold and serve.
+    Attachment {
+        /// Where the encrypted blob was uploaded, via `POST /inbox/{bucket_id}`.
+        bucket_id: String,
+        /// The fresh, single-use key the blob was encrypted under (D-037).
+        key: Vec<u8>,
+        /// The original filename. Never sent anywhere outside this encrypted
+        /// payload (SPEC §7.1: "original filenames never travel unencrypted").
+        filename: String,
+        /// The stripped container format, e.g. "JPEG" — for display, not a
+        /// trust decision; the recipient still detects the format itself
+        /// before opening the bytes.
+        format: String,
+    },
 }

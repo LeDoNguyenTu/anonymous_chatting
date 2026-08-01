@@ -42,6 +42,15 @@ with it, say so and quote the section.
   `docs/DECISIONS.md`. `openmls` breaks its API across minor versions.
 - **`docs/DECISIONS.md` is append-only.** Supersede, never edit away.
 - **Update `docs/PROGRESS.md` before finishing a session.**
+- **Bump the version number after each phase or each critical fix** — project
+  owner instruction, 2026-08-02. Four places have to move together: root
+  `Cargo.toml`'s `[workspace.package] version` (covers `core`, `server`,
+  `clients/cli`), `clients/desktop/src-tauri/Cargo.toml`'s own `version`
+  (outside the workspace, not inherited), `clients/desktop/src-tauri/tauri.conf.json`'s
+  `version`, and `clients/desktop/package.json`'s `version`. `SecurityDetailsView.app_version`
+  reads `env!("CARGO_PKG_VERSION")` from the desktop crate's own `Cargo.toml`
+  at compile time, which is why that one has to move even though it is not
+  part of the workspace.
 - The UI layer never touches a key, a cipher, or a raw ciphertext blob. If a
   client seems to need one, the core is missing an operation — add it to
   `core/src/api.rs` rather than reaching around it.
@@ -82,7 +91,7 @@ a code defect without checking that first.
 
 ## Settled decisions worth not relitigating
 
-Full reasoning is in `docs/DECISIONS.md` (D-001…D-037). The short version:
+Full reasoning is in `docs/DECISIONS.md` (D-001…D-038). The short version:
 
 - Name is **Pouch** (D-015); "Courier" in the spec was a placeholder.
 - MLS via `openmls =0.8.1`, not Signal Protocol (D-002).
@@ -95,9 +104,14 @@ Full reasoning is in `docs/DECISIONS.md` (D-001…D-037). The short version:
   (D-006) — **except** the one narrow, project-owner-approved exception in
   D-037: a fresh, single-use AES-128-GCM key per file, for exactly the case
   D-006 does not cover (a file is not a group message). No new dependency —
-  it calls the same audited backend already in the tree. Backup export uses
-  it (done); the attachment pipeline will too (not yet built — it also needs
-  a metadata-stripping library, a separate decision D-037 does not answer).
+  it calls the same audited backend already in the tree. Backup export and
+  the attachment pipeline both use it — done.
+- Attachment metadata stripping is `img-parts`, scoped to JPEG/PNG/WebP —
+  video is explicitly refused, not silently sent unstripped (D-038). The
+  attachment blob uploads to a random relay identifier of its own, never
+  either party's inbox and never inside an MLS message — no relay change,
+  since a "bucket id" is just another opaque id the existing
+  `POST /inbox/{id}` already accepts.
 - Relay stores four fields, `message_id` random rather than sequential (D-010).
 - Compress → pad → encrypt, each payload compressed in isolation (D-009).
   Compression itself now runs, unconditionally, no size threshold (D-036) —
@@ -115,24 +129,34 @@ Full reasoning is in `docs/DECISIONS.md` (D-001…D-037). The short version:
 
 ## Where things stand
 
-Phases 0, 1, and 2 are code complete — **Phase 2 fully now**, including
-backup export/import, which was blocked, then approved (D-037), then built
-and verified in the same session, and is now wired all the way through the
-desktop client too (a later session: `commands.rs`, `bridge.ts`, and a new
-screen, `BackupRestore.tsx`). **Phase 3 is under way**: compression
-(manifest stage 3, D-036) is done. The attachment pipeline is not — it
-needs a metadata-stripping library choice D-037 does not answer. Sealed
-sender moved to Phase 4 (SPEC.md's phase table now says so): the relay's
+Phases 0, 1, and 2 are code complete — **Phase 2 fully**, including backup
+export/import (D-037), wired all the way through the desktop client
+(`commands.rs`, `bridge.ts`, `BackupRestore.tsx`). **Phase 3's core and CLI
+halves are done**: compression (D-036), and the attachment pipeline —
+strip (D-038, `img-parts`, images only), pad, encrypt (D-037's shape),
+upload to a random relay bucket id, all wired into `Pouch::send_attachment`
+and the receive path. Sealed sender stays out of Phase 3's exit
+requirement, moved to Phase 4 (SPEC.md's phase table says so): the relay's
 wire protocol already carries no sender field, so what remains is the
 TCP/TLS source IP a direct connection exposes, which only Tor removes.
-139 Rust tests and 36 frontend tests pass, verified locally on Windows; the
+**Not done for Phase 3**: the desktop attachment preview screen and image
+rendering, and offline-queue retry for a failed attachment blob upload
+(the small reference message already retries; the blob upload does not
+yet).
+
+163 Rust tests and 36 frontend tests pass, verified locally on Windows; the
 Phase 2 and initial-compression commits are confirmed green via `gh run
-list`, but D-037, backup export/import, and the desktop backup UI have not
-yet been observed going green in GitHub Actions — confirm that before
-trusting them the way Phase 0/1's "CI green" was trusted. The desktop
-backup screens specifically have also never been seen in a running window
-— this environment cannot launch the Tauri shell — so "verified" for them
-means build/typecheck/test only, not a GUI click-through.
+list`, but everything since (D-037/backup, the desktop backup UI, D-038/the
+attachment pipeline) has not yet been observed going green in GitHub
+Actions — confirm before trusting it the way Phase 0/1's "CI green" was
+trusted. Anything that touches a screen (the backup screens, and any future
+attachment screen) has also never been seen in a running window — this
+environment cannot launch the Tauri shell — so "verified" for those means
+build/typecheck/test only, not a GUI click-through.
+
+The version number moved to `0.1.1` this session — bump it after each
+phase or critical fix from here on (project owner instruction, see the
+conventions list above for the four files that have to move together).
 
 Full detail, the runnable demo, the manual checks still owed, and the ordered
 list of what is next are in `docs/PROGRESS.md`. Read that before starting work.
@@ -150,6 +174,8 @@ have been since Phase 1. If you find yourself looking for `api.rs` or
 | `core/src/api/messaging.rs` | Send, receive, and `flush_outbox` — the offline-queue retry |
 | `core/src/api/compression.rs` | Per-message zstd, isolated calls only — D-036 |
 | `core/src/api/backup.rs` | Backup file format, export/import — D-037 |
+| `core/src/api/attachments.rs` | `send_attachment`, attachment fetch/open, the random-bucket-id upload — SPEC §7.1 |
+| `core/src/attachments/` | Strip (`metadata.rs`, `img-parts`, images only — D-038), pad (`padding.rs`), and `prepare`/`open` (`mod.rs`, D-037's AEAD shape) |
 | `core/src/crypto/file_crypto.rs` | The AEAD-outside-MLS exception itself: fresh-key AES-128-GCM + HKDF, no new dependency — D-037 |
 | `core/src/crypto/identity.rs` | Identity creation, invite codes |
 | `core/src/crypto/session.rs` | MLS groups, encrypt, decrypt, ratchet config |
@@ -159,6 +185,7 @@ have been since Phase 1. If you find yourself looking for `api.rs` or
 | `core/src/storage/schema.rs` | Versioned migrations, tracked in `PRAGMA user_version` |
 | `core/src/storage/settings.rs` | Retention policy, per-conversation disappearing messages, purge |
 | `core/src/storage/outbox.rs` | The offline queue's storage — holds ciphertext, not plaintext |
+| `core/src/storage/attachments.rs` | Received attachment content (schema v3), keyed by the message id that references it |
 | `core/src/transport.rs` | Relay client, pinning policy |
 | `core/src/manifest.rs` | The per-message record of what actually ran |
 | `core/src/keying.rs` | Where the database key comes from: device-file placeholder or Argon2id passphrase. OS keystore route still not implemented — see D-035. |
@@ -166,6 +193,7 @@ have been since Phase 1. If you find yourself looking for `api.rs` or
 | `server/src/http.rs` | Three endpoints, no logging middleware |
 | `clients/cli/src/commands/storage.rs` | `keep`, `disappear`, `queue`, `changes`, `acknowledge`, `passphrase` |
 | `clients/cli/src/commands/backup.rs` | `backup export`, `backup import` |
+| `clients/cli/src/commands/attachments.rs` | `send-file`, `save-attachment` |
 | `clients/desktop/src-tauri/src/commands.rs` | 30 IPC commands, each one `Pouch` call — includes `export_backup`/`import_backup` |
 | `clients/desktop/src/lib/bridge.ts` | The typed IPC boundary. No passthrough by design. |
 | `clients/desktop/src/screens/PrivacyStorage.tsx` | Screen 7, SPEC §6.7.7 |

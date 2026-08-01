@@ -6,7 +6,7 @@ members = ["core", "server", "clients/cli"]
 exclude = ["clients/desktop/src-tauri"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 rust-version = "1.82"
 license = "AGPL-3.0-or-later"
@@ -58,6 +58,11 @@ tower-http = "=0.6.2"
 
 # --- payload --------------------------------------------------------------
 zstd = "=0.13.2"
+# Edits JPEG/PNG/WebP containers directly to strip EXIF/GPS/ICC without
+# decoding or re-encoding pixel data. D-038: the maintained library SPEC
+# §7.1 requires for attachment metadata stripping, scoped to images —
+# video is explicitly out of scope this phase, same entry.
+img-parts = "=0.4.0"
 
 # --- plumbing -------------------------------------------------------------
 anyhow = "=1.0.104"

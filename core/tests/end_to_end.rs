@@ -562,6 +562,219 @@ async fn two_clients_exchange_text_and_the_relay_learns_nothing() {
     }
 }
 
+/// A minimal well-formed JPEG carrying real EXIF/GPS/comment segments, built
+/// from the marker structure by hand — small, deterministic, and enough to
+/// exercise the pipeline without a binary test fixture in the repository.
+fn jpeg_with_exif_gps_and_comment(gps: &str, camera: &str, comment: &str) -> Vec<u8> {
+    let mut out = vec![0xFF, 0xD8]; // SOI
+
+    let mut exif = b"Exif\0\0".to_vec();
+    exif.extend_from_slice(b"II*\0");
+    exif.extend_from_slice(gps.as_bytes());
+    exif.extend_from_slice(b" ");
+    exif.extend_from_slice(camera.as_bytes());
+    push_segment(&mut out, 0xE1, &exif);
+    push_segment(&mut out, 0xFE, comment.as_bytes());
+    push_segment(&mut out, 0xDB, &[0u8; 3]); // DQT
+    push_segment(&mut out, 0xC0, &[8, 0, 1, 0, 1, 1, 0, 0, 0]); // SOF0
+    push_segment(&mut out, 0xC4, &[0u8; 3]); // DHT
+
+    out.extend_from_slice(&[0xFF, 0xDA, 0, 4, 0, 0, 0xAB, 0xCD, 0xFF, 0xD9]);
+    out
+}
+
+fn push_segment(out: &mut Vec<u8>, marker: u8, contents: &[u8]) {
+    out.push(0xFF);
+    out.push(marker);
+    out.extend_from_slice(&((contents.len() + 2) as u16).to_be_bytes());
+    out.extend_from_slice(contents);
+}
+
+/// A JPEG whose metadata-stripped size is (very close to) `target_bytes`.
+///
+/// The padding bucket a file lands in is decided by what survives
+/// stripping, so the filler lives in the SOS entropy-coded scan data —
+/// which `metadata::strip` never touches, unlike a comment or EXIF segment,
+/// which would be removed before padding ever sees it.
+fn jpeg_of_stripped_size(target_bytes: usize) -> Vec<u8> {
+    let mut out = vec![0xFF, 0xD8]; // SOI
+    push_segment(&mut out, 0xDB, &[0u8; 3]); // DQT
+    push_segment(&mut out, 0xC0, &[8, 0, 1, 0, 1, 1, 0, 0, 0]); // SOF0
+    push_segment(&mut out, 0xC4, &[0u8; 3]); // DHT
+
+    // SOS header (minimal), then the entropy blob: `img-parts` treats
+    // everything after the SOS header as one opaque entropy segment, EOI
+    // included, so the filler bytes can be arbitrary.
+    out.extend_from_slice(&[0xFF, 0xDA, 0, 4, 0, 0]);
+    let filler = target_bytes.saturating_sub(2); // room for the EOI marker
+    out.extend(std::iter::repeat_n(0xAB, filler));
+    out.extend_from_slice(&[0xFF, 0xD9]); // EOI
+    out
+}
+
+#[tokio::test]
+async fn an_attachment_strips_metadata_and_the_relay_learns_nothing_about_it() {
+    // SPEC §8.4, as an automated test: upload an image with known GPS EXIF
+    // and a distinctive original filename, retrieve and decrypt it, and
+    // assert EXIF is absent, GPS is absent, and the filename is not present
+    // in any server-visible field.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let (addr, relay_db) = spawn_relay(dir.path()).await;
+    let relay = || RelayConfig::insecure_local(format!("http://{addr}"));
+
+    let brian_db = dir.path().join("brian.db").to_string_lossy().into_owned();
+    let mai_db = dir.path().join("mai.db").to_string_lossy().into_owned();
+
+    let mut brian = Pouch::create("Brian", &brian_db, &mut key(0x11), relay()).expect("brian");
+    let mut mai = Pouch::create("Mai", &mai_db, &mut key(0x22), relay()).expect("mai");
+    let code = mai.invite_code().expect("code");
+    let conversation = brian.add_contact("Mai", &code).await.expect("adds");
+    mai.receive_messages().await.expect("mai joins");
+
+    const GPS: &str = "GPS 37.774900 N 122.419400 W";
+    const CAMERA: &str = "Canon EOS 5D Mark IV";
+    const COMMENT: &str = "edited in a photo tool";
+    const FILENAME: &str = "vacation-secret-location.jpg";
+
+    let photo = jpeg_with_exif_gps_and_comment(GPS, CAMERA, COMMENT);
+    let manifest = brian
+        .send_attachment(&conversation, FILENAME, &photo)
+        .await
+        .expect("sends the attachment");
+    assert!(manifest.failure().is_none(), "{}", manifest.summary());
+    assert_eq!(
+        manifest.ran_count(),
+        7,
+        "compose, strip, pad, encrypt, route, queue, deliver — 7 of 9, {}",
+        manifest.summary()
+    );
+
+    let received = mai.receive_messages().await.expect("mai polls");
+    assert_eq!(received.messages.len(), 1);
+    assert!(
+        received.messages[0].body.contains(FILENAME),
+        "the thread does not show the attachment's filename"
+    );
+
+    let (opened_filename, content) = mai
+        .attachment(&received.messages[0].id)
+        .expect("reads")
+        .expect("mai has the attachment");
+    assert_eq!(opened_filename, FILENAME);
+
+    // The actual property under test: none of the stripped metadata, and
+    // none of the identities involved, survive anywhere the relay can see.
+    let dump = std::fs::read(&relay_db).expect("relay database is readable");
+    for canary in [
+        GPS.as_bytes(),
+        CAMERA.as_bytes(),
+        COMMENT.as_bytes(),
+        FILENAME.as_bytes(),
+        b"Brian",
+        b"Mai",
+    ] {
+        assert!(
+            !contains(&dump, canary),
+            "{:?} survives in the relay database",
+            String::from_utf8_lossy(canary)
+        );
+    }
+
+    // And the metadata is actually gone from what Mai received, not merely
+    // absent from the relay's copy in transit.
+    for canary in [GPS.as_bytes(), CAMERA.as_bytes(), COMMENT.as_bytes()] {
+        assert!(
+            !contains(&content, canary),
+            "{:?} survived in the received attachment",
+            String::from_utf8_lossy(canary)
+        );
+    }
+}
+
+#[tokio::test]
+async fn seventy_kb_and_two_hundred_kb_attachments_produce_identically_sized_blobs_on_the_relay() {
+    // SPEC §8.5, exactly as worded: send files of 70 KB and 200 KB, assert
+    // both produce blobs of identical size on the server. Both land in the
+    // 256 KB bucket (SPEC §7.1), so an observer of blob sizes alone cannot
+    // tell a 70 KB photo from a 200 KB one.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let (addr, relay_db) = spawn_relay(dir.path()).await;
+    let relay = || RelayConfig::insecure_local(format!("http://{addr}"));
+
+    let brian_db = dir.path().join("brian.db").to_string_lossy().into_owned();
+    let mai_db = dir.path().join("mai.db").to_string_lossy().into_owned();
+
+    let mut brian = Pouch::create("Brian", &brian_db, &mut key(0x11), relay()).expect("brian");
+    let mut mai = Pouch::create("Mai", &mai_db, &mut key(0x22), relay()).expect("mai");
+    let code = mai.invite_code().expect("code");
+    let conversation = brian.add_contact("Mai", &code).await.expect("adds");
+    mai.receive_messages().await.expect("mai joins");
+
+    // The size lives in the SOS entropy data, not the comment — a comment
+    // is metadata and gets stripped, so padding it would prove nothing about
+    // the size that actually reaches the bucket boundary.
+    let small = jpeg_of_stripped_size(70 * 1024);
+    let large = jpeg_of_stripped_size(200 * 1024);
+
+    brian
+        .send_attachment(&conversation, "small.jpg", &small)
+        .await
+        .expect("sends the small attachment");
+    brian
+        .send_attachment(&conversation, "large.jpg", &large)
+        .await
+        .expect("sends the large attachment");
+
+    // Blob sizes as the relay actually stored them, read directly from its
+    // database rather than through the client — the property under test is
+    // what an operator with the raw database would see, not what the SDK
+    // reports back to itself.
+    let conn = rusqlite::Connection::open(&relay_db).expect("opens the relay database");
+    let mut stmt = conn
+        .prepare("SELECT length(blob) FROM queue WHERE length(blob) > 10000 ORDER BY length(blob)")
+        .expect("prepares");
+    let sizes: Vec<i64> = stmt
+        .query_map([], |row| row.get(0))
+        .expect("queries")
+        .collect::<Result<_, _>>()
+        .expect("reads sizes");
+
+    assert_eq!(
+        sizes.len(),
+        2,
+        "expected exactly two large blobs (the two attachment uploads), found {sizes:?}"
+    );
+    assert_eq!(
+        sizes[0], sizes[1],
+        "a 70 KB and a 200 KB attachment produced differently sized blobs on the relay"
+    );
+}
+
+#[tokio::test]
+async fn sending_a_non_image_attachment_is_refused_before_anything_is_uploaded() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let (addr, relay_db) = spawn_relay(dir.path()).await;
+    let relay = || RelayConfig::insecure_local(format!("http://{addr}"));
+
+    let brian_db = dir.path().join("brian.db").to_string_lossy().into_owned();
+    let mai_db = dir.path().join("mai.db").to_string_lossy().into_owned();
+
+    let mut brian = Pouch::create("Brian", &brian_db, &mut key(0x11), relay()).expect("brian");
+    let mut mai = Pouch::create("Mai", &mai_db, &mut key(0x22), relay()).expect("mai");
+    let code = mai.invite_code().expect("code");
+    let conversation = brian.add_contact("Mai", &code).await.expect("adds");
+
+    let result = brian
+        .send_attachment(&conversation, "notes.txt", b"just plain text, not an image")
+        .await;
+    assert!(result.is_err(), "a non-image attachment must be refused");
+
+    // Refused before any upload happened — the relay database should still
+    // be empty of this attempt entirely, not merely of its metadata.
+    let dump = std::fs::read(&relay_db).expect("relay database is readable");
+    assert!(!contains(&dump, b"just plain text"));
+}
+
 #[tokio::test]
 async fn a_conversation_survives_a_restart() {
     // The bug that only an end-to-end run finds: MLS state persists, but the

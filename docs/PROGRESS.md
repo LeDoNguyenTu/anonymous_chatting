@@ -12,12 +12,13 @@ Do not begin a phase before the previous phase meets its exit criteria.
 
 | | |
 |---|---|
-| **Phase complete** | 0 — Foundation · 1 — Working 1:1 encrypted chat · 2 — Storage control and hardening, **fully, as of today** |
-| **Phase next** | 3 — Attachments and sealed sender. Compression (stage 3) is done. Backup export/import is done in `core`, the CLI, **and now the desktop client**. |
+| **Phase complete** | 0 — Foundation · 1 — Working 1:1 encrypted chat · 2 — Storage control and hardening, **fully** |
+| **Phase next** | 3 — Attachments and compression. Compression (stage 3), backup, and the attachment pipeline (stage 2, images only — D-038) are all done in `core` and the CLI. Not done: attachment UI (preview screen, image rendering) in the desktop client, and offline-queue retry for a failed attachment upload. |
 | **Branches** | `main` (repository default) and `develop`, both pushed; `main` intentionally left behind `develop` — see the note in this section's history for why |
-| **Blocked on** | The attachment pipeline still needs a second, narrower decision than backup did: which library strips EXIF/GPS/device metadata, and whether it handles video containers as SPEC §7.1 itself flags as an open question. D-037 answered the encryption half; it did not answer this half. Sealed sender needs something bigger — this relay's wire protocol already carries no sender field, so the only remaining "who sent this" signal is the TCP/TLS source IP a direct connection necessarily exposes, which is Phase 4's Tor onion service to close, not a Phase-3-sized change. |
-| **Tests** | 113 Rust core + 10 end-to-end + 12 relay + 4 server-blindness = 139 Rust · 36 frontend |
-| **CI** | confirmed green via `gh run list` for the Phase 2 and initial Phase 3 (compression) commits. D-037/backup export/import (core+CLI) verified locally (fmt, clippy -D warnings, full test suite, both guardrail scripts, a live CLI export→wipe→import→send round trip) but not yet confirmed in Actions at last check — confirm before trusting it the same way. The desktop backup UI commit (this session) is verified locally the same way, plus `cargo check --all-targets --locked` and `npm run typecheck/test/build`, but the GUI itself could not be run — see below. |
+| **Blocked on** | Nothing for Phase 3's core/CLI half. What remains is UI work (desktop attachment preview + rendering) and Phase 4's Tor-dependent sealed sender — this relay's wire protocol already carries no sender field, so the only remaining "who sent this" signal is the TCP/TLS source IP a direct connection necessarily exposes, which only Tor closes. |
+| **Tests** | 134 Rust core + 13 end-to-end + 12 relay + 4 server-blindness = 163 Rust · 36 frontend |
+| **CI** | confirmed green via `gh run list` for the Phase 2 and initial Phase 3 (compression) commits. Everything since — D-037/backup (core+CLI+desktop), the attachment pipeline (D-038, core+CLI) — verified locally the same way (fmt, clippy -D warnings, full test suite, both guardrail scripts) but not yet confirmed in Actions at last check — confirm before trusting it the same way. The desktop backup screens and the attachment pipeline have never been seen in a running GUI window — this environment cannot launch the Tauri shell — so "verified" for the parts that touch a screen means build/typecheck/test only. |
+| **Version** | `0.1.1`, bumped from `0.1.0` this session per the project owner's instruction to bump after each phase or critical fix (2026-08-02). Four files move together — see `docs/CONTEXT.md`'s conventions list. |
 
 ### Owed to the project owner
 
@@ -565,25 +566,107 @@ sender," with the reasoning recorded inline in both sections rather than
 only here.
 
 Implemented with this approval: Phase 2's backup export/import, in full —
-see that phase's section above. Not yet implemented: the attachment
-pipeline itself, which still needs the metadata-stripping library decision
-described above.
+see that phase's section above. Not yet implemented at the time: the
+attachment pipeline itself, which still needed the metadata-stripping
+library decision. See D-038 below — that decision is made and the pipeline
+is built.
+
+### D-038: metadata stripping, and the attachment pipeline, built
+
+Investigated the Rust ecosystem for an EXIF/metadata-stripping library
+(`cargo info` against crates.io) rather than guessing. `img-parts` — pure
+Rust, no `unsafe`, maintained — edits JPEG/PNG/WebP containers directly,
+removing EXIF/ICC/XMP/comment segments without decoding pixel data. Video
+had no comparable option: metadata hides in different container-specific
+places, and the realistic alternative wraps FFmpeg's C libraries against
+attacker-controlled input, a materially bigger attack surface than
+anything else in this dependency graph. Put to the project owner directly:
+approved images-only for Phase 3 (JPEG/PNG/WebP via `img-parts`), video
+attachments explicitly refused with an honest message rather than silently
+sent unstripped. Full reasoning in `docs/DECISIONS.md` D-038; SPEC.md's
+Phase 3 section and exit criterion both say so inline.
+
+Built the same session, in `core/src/attachments/`:
+
+- `metadata.rs` — format detection by signature, and stripping. JPEG: every
+  APPn segment (0–15) and every comment segment removed, not only EXIF/ICC —
+  XMP, Photoshop IRB, and JFIF thumbnails can all carry metadata too, and
+  SPEC says "strip all metadata," not "strip the two things the library has
+  a convenience method for." PNG: `eXIf`, `tEXt`, `zTXt`, `iTXt`, `tIME`,
+  `iCCP` removed the same way. WebP: EXIF, ICC, and XMP chunks removed.
+  Every removal goes through `img-parts`'s structured segment/chunk API —
+  never hand-parsed bytes, which SPEC §7.1 explicitly forbids.
+- `padding.rs` — the same five fixed buckets SPEC §7.1 names (64 KB/256
+  KB/1 MB/4 MB/16 MB, then 16 MB increments), with an 8-byte length prefix
+  so padding is reversible.
+- `mod.rs` — `prepare`/`open`, the one entry point that orders strip → pad →
+  encrypt correctly rather than trusting a caller to. Encryption reuses
+  D-037's exact shape (`crypto::file_crypto`, fresh AES-128-GCM key per
+  file) — no new AEAD decision needed, D-037 already covers this case.
+
+Wiring into `Pouch` (`core/src/api/attachments.rs`, plus a new
+`Payload::Attachment` variant and `Manifest::new_for_attachment`): the
+attachment ciphertext is **not** sent inside an MLS application message —
+it is uploaded on its own to a freshly generated random relay identifier,
+via the exact same `POST /inbox/{id}` the relay already exposes for
+messages (a "bucket id" is just another opaque identifier, generated by
+the sender instead of being either party's own inbox — no new relay
+endpoint, no relay change at all). Only a small reference — where to fetch
+it, the fresh key, the filename — travels through the normal encrypted
+message channel, so a multi-megabyte blob never sits in the same queue
+slot a text message does. The recipient fetches the bucket, decrypts and
+unpads with the referenced key, stores it, and acknowledges the bucket so
+it does not linger — made idempotent against a crash between those two
+steps (`has_attachment` check before re-fetching).
+
+Storage: a new `attachments` table (schema v3), sharing its primary key
+with the `messages` row that references it, holding the *stripped* content
+— never the original file, which never crosses the network at all.
+
+Verified against a real relay, real binary, via new end-to-end tests
+(`core/tests/end_to_end.rs`) rather than only unit tests:
+
+- **SPEC §8.4, verbatim as a test.** Upload an image with known GPS EXIF and
+  a distinctive filename, retrieve and decrypt it on the other device, dump
+  the relay's raw database file, assert none of it — GPS, camera model,
+  comment, filename, either party's name — appears anywhere.
+- **SPEC §8.5, verbatim as a test.** Send 70 KB and 200 KB attachments,
+  read the relay's stored blob lengths directly from its database, assert
+  they are byte-identical.
+- A non-image file is refused before anything is uploaded — the relay
+  database stays empty of the attempt entirely, not merely of its metadata.
+
+A CLI surface exists for manual verification and demos: `pouch-cli
+send-file <conversation> <path>` and `pouch-cli save-attachment <id>
+<path>`; `receive`/`read` print an attachment's id alongside its
+`[attachment] <filename>` placeholder body so `save-attachment` has
+something to act on.
+
+**Known gap, honestly scoped rather than hidden:** a failed attachment
+*blob* upload is not queued for offline retry the way a text message is —
+`send_message`'s failure path re-queues the MLS ciphertext for
+`flush_outbox` to retry; `send_attachment`'s does not, because the
+blob upload happens outside MLS and there is nowhere established yet to
+hold "an unsent file" the way the outbox holds "an unsent message." The
+small reference message *is* queued and retried, matching `send_message`
+exactly. Tracked below.
 
 ### What is still owed before Phase 3 can be called done
 
-- [ ] **Pick a metadata-stripping library** for the attachment pipeline, and
-  confirm it covers video containers or flag honestly that it does not, per
-  SPEC §7.1. Then build the pipeline itself: per-file key (D-037 covers how),
-  strip, pad, encrypt, upload, attachment preview screen, image/file
-  rendering.
-- [x] **Wire backup into the desktop client.** Done this session — see the
-  "Backup export/import: blocked, then built, same session" section under
-  Phase 2, above.
+- [x] **Pick a metadata-stripping library** and build the attachment
+  pipeline — done this session (D-038), see above.
+- [x] **Wire backup into the desktop client** — done, see Phase 2's section.
+- [ ] **Attachment UI in the desktop client**: the preview screen with the
+  strip manifest (SPEC §6.7.8), and rendering a received image rather than
+  its `[attachment] <filename>` placeholder text.
+- [ ] **Offline-queue retry for a failed attachment blob upload** — see the
+  gap noted just above. Text messages already retry; attachments do not
+  yet.
 - [ ] **Sealed sender itself** — waits on Phase 4 existing, per the reorder
   above.
-- [ ] **Manual GUI check for the backup screens**, once a window can
-  actually be launched — the two flows are verified by build/typecheck/test
-  only, per the note above.
+- [ ] **Manual GUI check for the backup screens and any future attachment
+  screen**, once a window can actually be launched — verified by
+  build/typecheck/test only so far, per the note above.
 
 ---
 
