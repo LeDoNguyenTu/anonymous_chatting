@@ -313,9 +313,9 @@ pub async fn verify_contact(
 /// `DIRECT` / `TOR` / `OFFLINE`, for the Custody Strip.
 #[tauri::command]
 pub async fn transport_state(state: State<'_, AppState>) -> Result<String, String> {
-    let guard = state.lock().await;
+    let mut guard = state.lock().await;
     let pouch = guard
-        .as_ref()
+        .as_mut()
         .ok_or_else(|| "No identity is open on this device yet.".to_string())?;
     Ok(pouch.transport_state().await.label().to_string())
 }

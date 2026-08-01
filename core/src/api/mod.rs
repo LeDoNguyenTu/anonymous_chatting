@@ -157,7 +157,15 @@ impl Pouch {
 
     /// Whether the relay is answering. Drives the Custody Strip's transport
     /// field between `DIRECT` and `OFFLINE`.
-    pub async fn transport_state(&self) -> Route {
+    /// Takes `&mut self` rather than `&self` deliberately.
+    ///
+    /// A future holding `&Pouch` across an await is `Send` only if
+    /// `Pouch: Sync`, and it is not — `rusqlite::Connection` is `Send` but not
+    /// `Sync`. The desktop shell needs every command future to be `Send`, so
+    /// an async method that borrows shared would compile here and fail only in
+    /// the one CI job that can build Tauri. `&mut Pouch` is `Send` because
+    /// `Pouch` is.
+    pub async fn transport_state(&mut self) -> Route {
         if self.relay.reachable().await {
             Route::Direct
         } else {
@@ -226,5 +234,33 @@ mod thread_safety {
     fn pouch_is_send() {
         fn assert_send<T: Send>() {}
         assert_send::<Pouch>();
+    }
+
+    /// Every async operation must produce a `Send` future.
+    ///
+    /// Tauri requires it of every command, and the failure mode is nasty: an
+    /// async method taking `&self` compiles perfectly in this crate and fails
+    /// only in the GTK-dependent job, because `&Pouch` is `Send` only if
+    /// `Pouch: Sync` — which it is not, since `rusqlite::Connection` is not
+    /// `Sync`. Asserting it here turns a twenty-minute CI round trip into a
+    /// compile error.
+    ///
+    /// If this stops compiling, an async method has started borrowing shared.
+    /// Change it to `&mut self`.
+    #[test]
+    fn async_operations_produce_send_futures() {
+        fn assert_send_future<F: std::future::Future + Send>(_: F) {}
+
+        // Never executed — the assertion is that this type-checks. Verified
+        // to actually catch a regression: changing `transport_state` back to
+        // `&self` makes this fail with "has type `&Pouch` which is not `Send`,
+        // because `Pouch` is not `Sync`".
+        #[allow(dead_code, unreachable_code, clippy::diverging_sub_expression)]
+        fn check(pouch: &mut Pouch) {
+            assert_send_future(pouch.transport_state());
+            assert_send_future(pouch.receive_messages());
+            assert_send_future(pouch.send_message("", ""));
+            assert_send_future(pouch.add_contact("", ""));
+        }
     }
 }
