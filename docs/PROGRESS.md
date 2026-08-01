@@ -12,12 +12,20 @@ Do not begin a phase before the previous phase meets its exit criteria.
 
 | | |
 |---|---|
-| **Phase complete** | 0 — Foundation |
-| **Phase in progress** | 1 — Working 1:1 encrypted chat. **Core, relay and CLI done and working end to end. Desktop screens are what remain.** |
-| **Branch** | `develop` |
+| **Phase complete** | 0 — Foundation · 1 — Working 1:1 encrypted chat (code complete) |
+| **Phase next** | 2 — Storage control and hardening |
+| **Branches** | `main` and `develop`, both at the same commit |
 | **Blocked on** | nothing |
-| **Tests** | 76 passing |
-| **CI** | green — all five jobs |
+| **Tests** | 87 Rust · 24 frontend |
+| **CI** | green on `main` and `develop` — all five jobs |
+
+### Owed to the project owner
+
+- **Delete the branch `claude/private-messaging-app-xjc6n1` on GitHub.** The
+  session's git proxy returns HTTP 403 on branch deletion — a policy denial, not
+  a transient error — so it could not be removed from here. Its contents are
+  identical to `main`; only the name remains.
+- **Set `main` as the repository's default branch** (Settings → General).
 
 ---
 
@@ -76,7 +84,7 @@ are derived rather than asserted. See `DESIGN_SYSTEM.md` §2.2.
 
 ---
 
-## Phase 1 — Working 1:1 encrypted chat · in progress
+## Phase 1 — Working 1:1 encrypted chat · code complete
 
 ### Scope (SPEC §9)
 
@@ -149,30 +157,12 @@ padding and sealed sender named as `not yet implemented` rather than hidden.
 | Server blindness test (§8.3) passes | **met** — `server/tests/server_blindness.rs`, plus a second assertion against a real conversation in `end_to_end.rs` |
 | Manifest accuracy test (§8.6) passes | **met** — `core/src/manifest.rs` tests |
 | Manual DB dump reviewed and confirmed clean | **met** — relay database contains no message text, no display name, no fragment |
-| Desktop client screens | **not started** — this is what stands between here and the milestone |
+| Desktop client screens | **built** — first run, conversation list, conversation view with the Custody Strip, add contact, safety number, security details, plus the Manifest and the relay-visibility panel |
 
 ### What is left in Phase 1
 
-The desktop client, which is currently a Phase 0 token shell. In SPEC §6.6
-order:
-
-1. First run — create identity, offer but do not force a passphrase
-2. Conversation list
-3. Conversation view with the Custody Strip (component already exists and is
-   tested; it needs wiring to `Pouch`)
-4. Add contact — invite code as QR plus mono text
-5. Safety number — 60 digits, grouped in fives, plus QR
-6. Security details — `Pouch::security_details()` already returns everything
-   this screen needs
-7. The Manifest UI — collapsed line, expanded view, live stage progression,
-   and "what the relay could see" (`RelayVisibility` already returns the three
-   honest blocks)
-
-The Tauri bridge in `clients/desktop/src-tauri/src/main.rs` is a bare window
-with no commands. It needs `#[tauri::command]` wrappers over `Pouch`, and
-nothing lower level than `Pouch` (D-012).
-
-Also outstanding in Phase 1, smaller:
+Nothing that blocks the milestone in code. What remains is verification that
+needs real hardware, plus three deferrals carried into Phase 2:
 
 - **Offline queue.** `send_message` returns an error with the right copy when
   the relay is unreachable, but nothing retries. The manifest already reports
@@ -181,8 +171,17 @@ Also outstanding in Phase 1, smaller:
   unpinned remote relays, but the relay itself serves plain HTTP and the SPKI
   pin is not yet checked against a presented certificate. Loopback development
   works today; a remote deployment does not.
-- **Key from the OS keystore.** The CLI takes the database key from
-  `POUCH_KEY`, which is development-grade and says so in its own help text.
+- **Key from the OS keystore.** `core/src/keying.rs` is the single answer to
+  where a key comes from. It holds a real Argon2id path with pinned parameters
+  and a `development_device_key` placeholder whose own documentation says it
+  protects against nothing — the key file sits beside the database it unlocks.
+  Replacing it means replacing exactly one function. **This is the first task
+  of Phase 2.**
+- **QR codes** on the invite-code and safety-number screens. Both currently
+  show the mono text block, which is the half that matters for correctness;
+  the QR is a convenience.
+- **Retention controls.** The Custody Strip's third field is hardcoded to
+  `KEEP`, which is the true default. Phase 2 makes it settable.
 
 ---
 
@@ -253,6 +252,33 @@ early.
 
 The audit job also went from five minutes to five seconds by installing a
 prebuilt `cargo-audit` instead of compiling it every run.
+
+### The desktop client, as built
+
+```
+clients/desktop/
+├── src-tauri/src/
+│   ├── main.rs       window + the command registry
+│   ├── state.rs      the one Pouch, behind an async mutex
+│   └── commands.rs   17 commands, each a thin wrapper over one Pouch call
+└── src/
+    ├── lib/bridge.ts     the typed IPC boundary — the readable answer to
+    │                     "what can the interface do". No passthrough.
+    ├── components/       CustodyStrip, Manifest (+ relay visibility)
+    ├── screens/          FirstRun, ConversationList, Conversation,
+    │                     AddContact, SafetyNumber, SecurityDetails
+    └── App.tsx           route union
+```
+
+Two properties worth not breaking, both tested:
+
+- **`bridge.ts` narrows towards caution.** An identity label it does not
+  recognise becomes `UNVERIFIED`, never `VERIFIED`. An unrecognised transport
+  becomes `OFFLINE`, never `TOR`. If the two sides drift apart, the interface
+  must not claim a verification that did not happen.
+- **The Manifest reports, it does not infer.** No stage is assumed from an
+  adjacent one, none are hidden, and the relay-visibility panel renders all
+  three blocks including the one saying what still leaks.
 
 ### Manual checks still owed for Phase 1 exit
 

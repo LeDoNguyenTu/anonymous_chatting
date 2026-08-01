@@ -98,10 +98,12 @@ Full reasoning is in `docs/DECISIONS.md` (D-001…D-018). The short version:
 
 ## Where things stand
 
-Phase 0 complete. Phase 1's **core, relay and CLI are done and working end to
-end**; the desktop screens are what remain. 76 tests pass. Full detail, the
-runnable demo, and the ordered list of what is next are in `docs/PROGRESS.md` —
-read that before starting work.
+Phases 0 and 1 are code complete: relay, core, CLI, and the desktop client.
+87 Rust tests and 24 frontend tests pass, CI is green on `main` and `develop`.
+**Phase 2 — storage control and hardening — is next.**
+
+Full detail, the runnable demo, the manual checks still owed, and the ordered
+list of what is next are in `docs/PROGRESS.md`. Read that before starting work.
 
 ## The map of the code
 
@@ -117,7 +119,10 @@ read that before starting work.
 | `core/src/manifest.rs` | The per-message record of what actually ran |
 | `server/src/store.rs` | The relay's four columns |
 | `server/src/http.rs` | Three endpoints, no logging middleware |
+| `core/src/keying.rs` | Where the database key comes from. **Phase 2 starts here.** |
 | `clients/cli/src/main.rs` | Headless client, eleven commands |
+| `clients/desktop/src-tauri/src/commands.rs` | 17 IPC commands, each one `Pouch` call |
+| `clients/desktop/src/lib/bridge.ts` | The typed IPC boundary. No passthrough by design. |
 
 ## Hard-won lessons from Phase 1
 
@@ -149,6 +154,28 @@ Each of these cost real debugging time. They are in `docs/DECISIONS.md` in full.
   each advisory for reachability, fix what upgrades fix, and list the rest in
   `.cargo/audit.toml` *with a reason*. Never make one invisible. The four
   accepted entries are re-reviewed on any `openmls` release.
+- **`&self` on an async method makes its future non-`Send`.** `Pouch` is `Send`
+  but not `Sync` (`rusqlite::Connection` holds a `RefCell`), and Tauri requires
+  every command future to be `Send`. Async methods on `Pouch` take `&mut self`.
+  A test in `core/src/api/mod.rs` asserts this, because the alternative is
+  finding out from the one CI job that needs GTK.
+- **Verify a guard by making it fail.** The `Send` assertion above was checked
+  by reverting the signature and confirming the compiler rejected it. A guard
+  that has never been seen to fail is a guard nobody has checked. The same
+  applies to `check-guardrails.sh` and the server-blindness suite, both of
+  which were negative-tested when written.
+
+## What cannot be done from this environment
+
+Worth knowing before spending time on it:
+
+- **The Tauri crate does not compile here** — no GTK or WebKitGTK. Write it,
+  push it, and read the `Tauri shell — build` CI job. Assumptions it depends on
+  should be asserted in `core`, which builds everywhere.
+- **Branch deletion is blocked** — the git proxy returns 403 on a delete
+  refspec. Pushes work; deletes do not.
+- **The GUI cannot be run**, so the frontend's honesty rules are tested through
+  `renderToStaticMarkup` and a fake bridge rather than a browser.
 
 ## Two constraints that shape design decisions
 
