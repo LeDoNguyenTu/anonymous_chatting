@@ -54,6 +54,107 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
 }
 
 #[tokio::test]
+async fn a_backup_restores_identity_messages_and_verification_onto_a_fresh_device() {
+    // SPEC §7.3 and D-037. The claim under test is the one that actually
+    // matters: after wiping the original device entirely, a second device
+    // that has never seen this identity can restore it from nothing but the
+    // backup file and the recovery key, and end up able to keep talking to
+    // the original conversation partner — same identity key, same
+    // conversation, same trust state, same history.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let (addr, _) = spawn_relay(dir.path()).await;
+    let relay = || RelayConfig::insecure_local(format!("http://{addr}"));
+
+    let brian_db = dir.path().join("brian.db").to_string_lossy().into_owned();
+    let mai_db = dir.path().join("mai.db").to_string_lossy().into_owned();
+
+    let mut brian = Pouch::create("Brian", &brian_db, &mut key(0x11), relay()).expect("brian");
+    let mut mai = Pouch::create("Mai", &mai_db, &mut key(0x22), relay()).expect("mai");
+    let code = mai.invite_code().expect("code");
+    let conversation = brian.add_contact("Mai", &code).await.expect("adds");
+    mai.receive_messages().await.expect("mai joins");
+    brian
+        .send_message(&conversation, "worth restoring")
+        .await
+        .expect("sends");
+    mai.receive_messages().await.expect("mai receives");
+
+    let contact_id = brian.conversations().expect("reads")[0].contact_id.clone();
+    brian.verify_contact(&contact_id, true).expect("verifies");
+
+    let original_inbox_id = brian.inbox_id().to_string();
+    let recovery_key = pouch_core::new_recovery_key();
+    let backup = brian.export_backup(&recovery_key).expect("exports");
+
+    // The original device is gone. Nothing below reads brian_db again.
+    drop(brian);
+
+    let new_device_db = dir
+        .path()
+        .join("brian-new-device.db")
+        .to_string_lossy()
+        .into_owned();
+    let mut restored = Pouch::import_backup(
+        &new_device_db,
+        &mut key(0x99), // an unrelated local key — this device's own, not the recovery key
+        &recovery_key,
+        &backup,
+        relay(),
+    )
+    .await
+    .expect("imports");
+
+    assert_eq!(restored.display_name(), "Brian");
+    assert_eq!(restored.inbox_id(), original_inbox_id);
+
+    let thread = restored.messages(&conversation).expect("reads");
+    assert_eq!(thread.len(), 1);
+    assert_eq!(thread[0].body, "worth restoring");
+
+    let summary = restored.conversations().expect("reads");
+    assert_eq!(summary.len(), 1);
+    assert_eq!(
+        summary[0].identity,
+        pouch_core::IdentityState::Verified,
+        "verification did not survive the restore"
+    );
+
+    // The restored identity is not a copy that merely looks the same — it is
+    // the same MLS state, so it can keep the conversation going. Proven by
+    // actually sending through it and having the original peer receive it.
+    restored
+        .send_message(&conversation, "sent from the restored device")
+        .await
+        .expect("sends from the restored device");
+    let received = mai.receive_messages().await.expect("mai receives");
+    assert_eq!(received.messages.len(), 1);
+    assert_eq!(received.messages[0].body, "sent from the restored device");
+}
+
+#[tokio::test]
+async fn a_backup_refuses_the_wrong_recovery_key() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let (addr, _) = spawn_relay(dir.path()).await;
+    let relay = || RelayConfig::insecure_local(format!("http://{addr}"));
+
+    let brian_db = dir.path().join("brian.db").to_string_lossy().into_owned();
+    let brian = Pouch::create("Brian", &brian_db, &mut key(0x11), relay()).expect("brian");
+
+    let recovery_key = pouch_core::new_recovery_key();
+    let backup = brian.export_backup(&recovery_key).expect("exports");
+
+    let wrong_key = pouch_core::new_recovery_key();
+    let restore_dir = dir.path().join("wrong.db").to_string_lossy().into_owned();
+    let result =
+        Pouch::import_backup(&restore_dir, &mut key(0x99), &wrong_key, &backup, relay()).await;
+
+    assert!(
+        result.is_err(),
+        "a backup opened under the wrong recovery key"
+    );
+}
+
+#[tokio::test]
 async fn a_highly_compressible_message_round_trips_and_the_manifest_says_so() {
     // Compression (manifest stage 3, D-009) is applied inside send_message and
     // reversed inside receive_messages — two different functions, two

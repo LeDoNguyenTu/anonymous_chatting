@@ -5,6 +5,7 @@
 //! this module appears to "do crypto" it is arranging inputs for a library
 //! call and nothing more.
 
+pub mod file_crypto;
 mod identity;
 mod provider;
 mod safety_number;

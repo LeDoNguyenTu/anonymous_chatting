@@ -30,8 +30,8 @@ pub mod storage;
 pub mod transport;
 
 pub use api::{
-    ApiError, ConversationSummary, IdentityChangeNotice, IdentityState, Message, Pouch,
-    RetentionPolicy, SecurityDetails,
+    new_recovery_key, ApiError, BackupError, ConversationSummary, IdentityChangeNotice,
+    IdentityState, Message, Pouch, RetentionPolicy, SecurityDetails, RECOVERY_KEY_BYTES,
 };
 
 /// The build phase this crate implements. Anything above this is documented

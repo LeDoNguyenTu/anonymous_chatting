@@ -82,7 +82,7 @@ a code defect without checking that first.
 
 ## Settled decisions worth not relitigating
 
-Full reasoning is in `docs/DECISIONS.md` (D-001…D-036). The short version:
+Full reasoning is in `docs/DECISIONS.md` (D-001…D-037). The short version:
 
 - Name is **Pouch** (D-015); "Courier" in the spec was a placeholder.
 - MLS via `openmls =0.8.1`, not Signal Protocol (D-002).
@@ -92,10 +92,12 @@ Full reasoning is in `docs/DECISIONS.md` (D-001…D-036). The short version:
 - Cipher cascading is permanently rejected (D-005). Hybrid X25519 + ML-KEM-768
   is the only legitimate combining (D-004).
 - AEAD is only ever invoked through MLS; application code never picks a nonce
-  (D-006). **No decision yet authorizes the one place this necessarily has to
-  change** — the attachment pipeline and encrypted backup both encrypt a file,
-  not a group message. Either is a stop-and-ask (SPEC §2.6) the day it starts,
-  not something to infer from D-006's general shape.
+  (D-006) — **except** the one narrow, project-owner-approved exception in
+  D-037: a fresh, single-use AES-128-GCM key per file, for exactly the case
+  D-006 does not cover (a file is not a group message). No new dependency —
+  it calls the same audited backend already in the tree. Backup export uses
+  it (done); the attachment pipeline will too (not yet built — it also needs
+  a metadata-stripping library, a separate decision D-037 does not answer).
 - Relay stores four fields, `message_id` random rather than sequential (D-010).
 - Compress → pad → encrypt, each payload compressed in isolation (D-009).
   Compression itself now runs, unconditionally, no size threshold (D-036) —
@@ -113,19 +115,19 @@ Full reasoning is in `docs/DECISIONS.md` (D-001…D-036). The short version:
 
 ## Where things stand
 
-Phases 0, 1, and 2 are code complete, with one deliberate exception: encrypted
-backup export/import is not built (see the D-006 note above — it needs a
-decision this session did not have standing to make unilaterally). **Phase
-3 is under way**: compression (manifest stage 3, D-036) is done and verified
-against a live relay; the attachment pipeline and sealed sender are both
-blocked — attachments on the same AEAD-outside-MLS decision as backup, and
-sealed sender on something bigger than expected: the wire protocol already
-carries no sender field, so what remains is the TCP/TLS source IP a direct
-connection exposes, which is Phase 4's (Tor) job, not a Phase 3 one. 125 Rust
-tests and 36 frontend tests pass, verified locally on Windows; **none of this
-session's commits have been observed going green in GitHub Actions** —
-confirm that before trusting any of it the way Phase 0/1's "CI green" was
-trusted.
+Phases 0, 1, and 2 are code complete — **Phase 2 fully now**, including
+backup export/import, which was blocked, then approved (D-037), then built
+and verified in the same session. **Phase 3 is under way**: compression
+(manifest stage 3, D-036) is done. The attachment pipeline is not — it
+needs a metadata-stripping library choice D-037 does not answer. Sealed
+sender moved to Phase 4 (SPEC.md's phase table now says so): the relay's
+wire protocol already carries no sender field, so what remains is the
+TCP/TLS source IP a direct connection exposes, which only Tor removes.
+139 Rust tests and 36 frontend tests pass, verified locally on Windows; the
+Phase 2 and initial-compression commits are confirmed green via `gh run
+list`, but D-037 and backup export/import have not yet been observed going
+green in GitHub Actions — confirm that before trusting them the way Phase
+0/1's "CI green" was trusted.
 
 Full detail, the runnable demo, the manual checks still owed, and the ordered
 list of what is next are in `docs/PROGRESS.md`. Read that before starting work.
@@ -142,6 +144,8 @@ have been since Phase 1. If you find yourself looking for `api.rs` or
 | `core/src/api/storage_controls.rs` | Retention, disappearing messages, identity-change acknowledgement, passphrase set/clear |
 | `core/src/api/messaging.rs` | Send, receive, and `flush_outbox` — the offline-queue retry |
 | `core/src/api/compression.rs` | Per-message zstd, isolated calls only — D-036 |
+| `core/src/api/backup.rs` | Backup file format, export/import — D-037 |
+| `core/src/crypto/file_crypto.rs` | The AEAD-outside-MLS exception itself: fresh-key AES-128-GCM + HKDF, no new dependency — D-037 |
 | `core/src/crypto/identity.rs` | Identity creation, invite codes |
 | `core/src/crypto/session.rs` | MLS groups, encrypt, decrypt, ratchet config |
 | `core/src/crypto/safety_number.rs` | 60-digit out-of-band verification |
@@ -156,6 +160,7 @@ have been since Phase 1. If you find yourself looking for `api.rs` or
 | `server/src/store.rs` | The relay's four columns |
 | `server/src/http.rs` | Three endpoints, no logging middleware |
 | `clients/cli/src/commands/storage.rs` | `keep`, `disappear`, `queue`, `changes`, `acknowledge`, `passphrase` |
+| `clients/cli/src/commands/backup.rs` | `backup export`, `backup import` — not yet wired into the desktop client |
 | `clients/desktop/src-tauri/src/commands.rs` | 28 IPC commands, each one `Pouch` call |
 | `clients/desktop/src/lib/bridge.ts` | The typed IPC boundary. No passthrough by design. |
 | `clients/desktop/src/screens/PrivacyStorage.tsx` | Screen 7, SPEC §6.7.7 |

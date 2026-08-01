@@ -12,19 +12,12 @@ Do not begin a phase before the previous phase meets its exit criteria.
 
 | | |
 |---|---|
-| **Phase complete** | 0 — Foundation · 1 — Working 1:1 encrypted chat · 2 — Storage control and hardening, minus one deliberately deferred item (below) |
-| **Phase next** | 3 — Attachments and sealed sender. One piece of it — compression, manifest stage 3 — is done; see below for why the rest is blocked. |
-| **Branches** | `main` (repository default) and `develop`, both at the same commit, pushed |
-| **Blocked on** | Attachments and backup export both need one AEAD-outside-MLS decision (SPEC §2.6 stop-and-ask, D-006's note). Sealed sender turns out to need something bigger: this relay's wire protocol carries no sender field at all already, so the only remaining "who sent this" signal is the TCP/TLS source IP a direct connection necessarily exposes — closing that is what Phase 4's Tor onion service does, not a Phase-3-sized change. Building an interim anonymity mechanism to hide it before Tor would be inventing a new protocol construction, which is the same stop-and-ask class as the other two. |
-| **Tests** | 101 Rust core + 8 end-to-end + 12 relay + 4 server-blindness = 125 Rust · 36 frontend |
-| **CI** | last known green on `main` and `develop` at the Phase 1 commit; nothing since has yet run through GitHub Actions — see note below |
-
-**Note on CI.** Everything in this section was verified locally on a Windows
-workstation (`cargo fmt`, `clippy -D warnings`, the full test suite, both
-guardrail scripts, `npm run typecheck`/`test`/`build`, and a live two-client
-send over a real relay binary) — not by watching a CI run. Confirm the GitHub
-Actions run is green before trusting any of this the way Phase 0 and 1's
-green CI was trusted.
+| **Phase complete** | 0 — Foundation · 1 — Working 1:1 encrypted chat · 2 — Storage control and hardening, **fully, as of today** |
+| **Phase next** | 3 — Attachments and sealed sender. Compression (stage 3) is done. Backup export was Phase 2's deferred item; it is done too, moved here because D-037 (below) unblocked it the same session it unblocks attachments. |
+| **Branches** | `main` (repository default) and `develop`, both pushed; `main` intentionally left behind `develop` — see the note in this section's history for why |
+| **Blocked on** | The attachment pipeline still needs a second, narrower decision than backup did: which library strips EXIF/GPS/device metadata, and whether it handles video containers as SPEC §7.1 itself flags as an open question. D-037 answered the encryption half; it did not answer this half. Sealed sender needs something bigger — this relay's wire protocol already carries no sender field, so the only remaining "who sent this" signal is the TCP/TLS source IP a direct connection necessarily exposes, which is Phase 4's Tor onion service to close, not a Phase-3-sized change. |
+| **Tests** | 113 Rust core + 10 end-to-end + 12 relay + 4 server-blindness = 139 Rust · 36 frontend |
+| **CI** | confirmed green via `gh run list` for the Phase 2 and initial Phase 3 (compression) commits. Everything after — D-037, backup export/import — has been verified locally the same way (fmt, clippy -D warnings, full test suite, both guardrail scripts, and a live CLI export→wipe→import→send round trip against a real relay) but not yet confirmed in Actions. Check before trusting it the same way. |
 
 ### Owed to the project owner
 
@@ -336,34 +329,46 @@ prove has been proved; what needs two machines or a running GUI has not.
 | Passphrase option with Argon2id | **done** |
 | Offline queue and retry on reconnect | **done** — SPEC §8.2 names this explicitly; Phase 1 left it as a promise in error copy ("will send when you reconnect") that nothing kept |
 | Identity change detection and the warning modal | **done** |
-| Encrypted backup export and import | **not done — deliberately.** See below. |
+| Encrypted backup export and import | **done, in `core` and the CLI — not yet in the desktop screen.** Was blocked, then unblocked; see below. |
 | Full test suite, §8.1/§8.2/§8.8 | **done**, including two gaps found and closed this session — see below |
 
-### Deliberately not built: encrypted backup export/import
+### Backup export/import: blocked, then built, same session
 
-SPEC §7.3 and screen 10 (§6.7.10) describe it, and it stayed out of this phase
-on purpose rather than by oversight. The reason is D-006, corrected this
-session: this project's standing rule is that application code never invokes
-an AEAD directly or picks a nonce — MLS owns that entirely, and the one
-documented exception path (`D-013`) turned out on inspection to be a stale
-cross-reference to the Tor-vs-VPN decision, not an actual authorization for
-anything. A backup file is not an MLS group message, so encrypting one
-necessarily means an AEAD invocation this project has never actually decided
-how to do safely. That is SPEC §2.6's stop-and-ask list, item one and item
-seven, at the same time: a construction decision, and a document (D-006)
-that turns out to contradict itself once read closely.
+SPEC §7.3 and screen 10 (§6.7.10) describe it. It stayed out of this phase at
+first on purpose, not by oversight: the reason was D-006, corrected earlier
+this session — this project's standing rule is that application code never
+invokes an AEAD directly or picks a nonce, and the one documented exception
+path (`D-013`) turned out on inspection to be a stale cross-reference to the
+Tor-vs-VPN decision, not an actual authorization for anything. A backup file
+is not an MLS group message, so encrypting one necessarily means an AEAD
+invocation this project had never actually decided how to do safely — SPEC
+§2.6's stop-and-ask list, twice over.
 
-The attachment pipeline that opens Phase 3 has the identical shape — a file,
-not a group message — so this decision has to be made once, before either
-backup or attachments, not twice. **This is the one thing this session
-believes needs the project owner's judgment before code gets written**,
-not because the engineering is hard, but because SPEC's own guardrails name
-this exact class of decision as one to stop for.
+That question was put to the project owner directly rather than assumed, and
+approved: a fresh, single-use AES-128-GCM key per file, derived from the
+recovery key via HKDF, via the same audited backend already in the dependency
+graph (no new crate). Full reasoning is `docs/DECISIONS.md` D-037. Built and
+verified the same session: `core/src/crypto/file_crypto.rs` (the AEAD and
+HKDF primitives), `core/src/api/backup.rs` (the file format and the
+export/import operations), and `pouch-cli backup export|import`. A live CLI
+run — export, delete the original device's database entirely, import onto a
+fresh path, send from the restored device, confirm the original peer
+receives it — round-tripped correctly, matching what the automated
+end-to-end test already proved.
 
-The UI does not hide the gap. The Privacy and storage screen states plainly,
-under "Not in this build," that encrypted backup is not implemented and why
-in one sentence — the same honesty rule the Manifest and RelayVisibility
-panels already follow for stages that have not landed yet.
+**The desktop screen does not have working backup buttons yet.** The Privacy
+and storage screen's "Not in this build" copy for backup is therefore still
+accurate for the desktop client specifically, even though the capability
+now exists in `core` and the CLI. Wiring `Pouch::export_backup`/
+`import_backup` through `commands.rs`, `bridge.ts`, and the screen's UI —
+recovery key display, the "confirm you saved it" gate SPEC §6.7.10
+requires, and the import flow — is the next piece, not yet started.
+
+The attachment pipeline (Phase 3) needed the identical AEAD-outside-MLS
+question and is unblocked by the same D-037 approval. What it still needs
+is a second, narrower decision D-037 does not answer: which library strips
+EXIF/GPS/device metadata, and whether it covers video containers as SPEC
+§7.1 itself flags as open. See the Phase 3 section below.
 
 ### Two test-coverage gaps found and closed this session
 
@@ -432,15 +437,24 @@ SPEC §9 scopes Phase 3 as: the attachment pipeline, the attachment preview
 screen, per-message compression, sealed sender, image/file rendering, and
 activating manifest stages 2, 3, and 6.
 
-Investigated all three headline pieces before writing any code, because two
-of them turned out to need a decision rather than an implementation:
+Investigated all three headline pieces before writing any code. Two turned
+out to need a decision rather than an implementation — one of those two was
+put to the project owner directly and approved the same session, the other
+was not (see below for which and why):
 
 - **Attachments (stage 2, metadata stripping)** need a per-file encryption
   key generated outside MLS — a file is not a group message. D-006 says
   application code never invokes an AEAD directly, and the one place that was
   supposed to already authorize the exception (a stale "D-013" cross-reference,
-  fixed this session) turned out to authorize nothing. Same blocker as backup
-  export from Phase 2.
+  fixed this session) turned out to authorize nothing. **The encryption half of
+  this is now resolved** — D-037, approved by the project owner, the same
+  approval that unblocked Phase 2's backup export. What is *not* resolved is a
+  second, separate question D-037 does not touch: which library strips
+  EXIF/GPS/device metadata, and whether it handles video containers, which
+  SPEC §7.1 itself flags as open ("Flag if the chosen library does not handle
+  the container"). That is a new dependency to choose and pin, not a crypto
+  question — worth its own short look before writing the pipeline, not
+  something to default into.
 - **Sealed sender (stage 6)** turned out to need more than expected. Reading
   `server/src/http.rs` and `core/src/transport.rs` end to end: the wire
   protocol already carries no sender field of any kind — `POST /inbox/{id}`
@@ -497,16 +511,39 @@ sending a real highly-compressible message through two live clients against
 a real relay, and a frontend test confirming the Manifest component renders
 a completed compression stage rather than "not yet implemented."
 
+### D-037: the AEAD-outside-MLS question, resolved
+
+Put to the project owner directly rather than assumed. Approved: a fresh,
+single-use AES-128-GCM key per file, derived via HKDF where a key has to come
+from something else (a recovery key, for backup), through the same audited
+backend `PouchProvider` already wraps for MLS — no new dependency. Full
+reasoning in `docs/DECISIONS.md` D-037.
+
+Also decided the same round: sealed sender moves out of Phase 3's exit
+requirement and into Phase 4, since it turns out to depend on what Tor
+provides — everything else in Phase 3 does not depend on Tor and is
+unaffected. SPEC.md's phase table is edited to say so: Phase 3 is now
+"Attachments and compression," Phase 4 is "Tor transport, then sealed
+sender," with the reasoning recorded inline in both sections rather than
+only here.
+
+Implemented with this approval: Phase 2's backup export/import, in full —
+see that phase's section above. Not yet implemented: the attachment
+pipeline itself, which still needs the metadata-stripping library decision
+described above.
+
 ### What is still owed before Phase 3 can be called done
 
-- [ ] **The AEAD-outside-MLS decision** — attachments and backup export both
-  wait on this. Needs the project owner; see D-006's note and
-  `docs/PROGRESS.md`'s Phase 2 section for the full reasoning.
-- [ ] **Sealed sender** — likely belongs sequenced after Phase 4 (Tor) rather
-  than before it, given what this session found. Worth the project owner's
-  explicit call on reordering rather than assuming it.
-- [ ] Attachment preview screen, image/file rendering — blocked on the
-  pipeline they preview.
+- [ ] **Pick a metadata-stripping library** for the attachment pipeline, and
+  confirm it covers video containers or flag honestly that it does not, per
+  SPEC §7.1. Then build the pipeline itself: per-file key (D-037 covers how),
+  strip, pad, encrypt, upload, attachment preview screen, image/file
+  rendering.
+- [ ] **Wire backup into the desktop client.** `core` and the CLI are done;
+  `commands.rs`, `bridge.ts`, and the Privacy and storage screen's recovery-
+  key display and import flow are not.
+- [ ] **Sealed sender itself** — waits on Phase 4 existing, per the reorder
+  above.
 
 ---
 

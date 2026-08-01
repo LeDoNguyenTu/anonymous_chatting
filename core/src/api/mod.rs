@@ -7,6 +7,7 @@
 //! If a client appears to need something lower level, the correct response is to
 //! add an operation here — never to expose the module underneath.
 
+mod backup;
 mod compression;
 mod contacts;
 mod error;
@@ -15,6 +16,7 @@ mod payload;
 mod storage_controls;
 mod types;
 
+pub use backup::{new_recovery_key, BackupError, RECOVERY_KEY_BYTES};
 pub use error::ApiError;
 pub(crate) use payload::Payload;
 pub use types::{

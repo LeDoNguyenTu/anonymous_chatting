@@ -17,7 +17,7 @@ Pouch is unaudited student work. Nothing below should be read as a guarantee.
 |---|---|---|
 | Message plaintext | Client device only | MLS group encryption; SQLCipher at rest |
 | Identity private key | Client device only | OS keystore, optional Argon2id passphrase |
-| Who is talking to whom | Nowhere as a stored fact | Opaque inbox identifiers; sealed sender (Phase 3) |
+| Who is talking to whom | Nowhere as a stored fact | Opaque inbox identifiers; sealed sender (Phase 4 — moved from Phase 3, 2026-08-02, once it turned out to depend on Tor) |
 | Attachment content and filenames | Client device; ciphertext at relay | Per-file key inside the E2EE payload |
 | Client IP address | Visible to relay until Phase 4 | Onion service from Phase 4 |
 
@@ -79,7 +79,10 @@ Never exists in a form the relay can read, at any point:
 - Profile display names
 - Group membership
 - Plaintext timestamps in relay storage (only a TTL expiry column exists)
-- Sender identity as seen by the relay — **from Phase 3**, via sealed sender
+- Sender identity as seen by the relay — **from Phase 4**, via sealed sender
+  (moved from Phase 3, 2026-08-02 — the relay's wire protocol already has no
+  sender field; what remains is the TCP/TLS source IP, which only the Phase 4
+  onion service removes)
 
 ### Reduced but present
 

@@ -1027,3 +1027,62 @@ does not extend there. Padding (stage 4) and sealed sender (stage 6) remain
 not yet implemented; see D-006's note on why neither has an authorizing
 decision. Backup export (SPEC §7.3) is unaffected and still deferred for the
 same reason.
+
+---
+
+## D-037 — A narrow, explicit exception to D-006 for file encryption
+**Date:** 2026-08-02 · **Status:** accepted — project owner approved 2026-08-02
+
+**The problem D-006 leaves unanswered.** A file — a backup, an attachment —
+is not an MLS group message, so it cannot go through `Conversation::encrypt`.
+D-006's rule is "application code never calls an AEAD directly and never
+generates a nonce." Backup export (SPEC §7.3) and the attachment pipeline
+(SPEC §7.1) both require encrypting a file. Something has to give, and it
+should not be decided implicitly by whichever feature gets built first.
+
+**What was checked before proposing anything.** Whether reusing the crypto
+backend already in the dependency graph — rather than adding a new AEAD
+crate — was even possible. It is:
+`openmls_traits::crypto::OpenMlsCrypto::aead_encrypt`/`aead_decrypt` are
+public methods on the same provider `PouchProvider` already wraps, backed in
+`openmls_rust_crypto 0.5.0` by the audited `aes-gcm` crate directly
+(`provider.rs`, `AeadType::Aes128Gcm` arm — unconditionally implemented, not
+gated behind the negotiated MLS ciphersuite). The same provider also exposes
+`hkdf_extract`/`hkdf_expand`. So this decision adds **no new dependency**:
+every primitive it uses is already pinned, already audited, already in this
+binary.
+
+**Decision, approved by the project owner rather than assumed.** File
+encryption uses `PouchProvider`'s own `aead_encrypt`/`aead_decrypt` with
+`AeadType::Aes128Gcm` — the same AEAD the MLS ciphersuite already names, for
+the same reason D-003 gives for not treating AES-128 as something to
+"upgrade" past. The key is:
+
+1. Freshly random, generated with `OsRng`, exactly the width AES-128-GCM
+   needs (16 bytes).
+2. Used for **exactly one** encryption operation, then held only as long as
+   the operation needs it and zeroized after.
+3. Never derived from, or stored alongside, anything else — a backup's key
+   comes from the recovery key via HKDF; an attachment's key is random and
+   travels inside the E2EE payload, per SPEC §7.1 step 6.
+
+**Why a random nonce is safe here despite D-006's stated reason not to pick
+one.** GCM's catastrophic failure mode is reusing a (key, nonce) pair. D-006
+was written for MLS application messages, where the same key persists across
+many messages and picking nonces by hand invites exactly that reuse. Here the
+key exists for one encryption and is discarded — there is no second message
+under this key for a nonce to collide with, so even a *fixed* nonce would be
+safe. A random 96-bit nonce via `OsRng` is used anyway, as ordinary hygiene
+and because it costs nothing.
+
+**What this does not open up.** This is not a general license to call an
+AEAD anywhere convenient. It is scoped to the fresh-key-single-use shape
+above. A future feature that would encrypt more than one thing under the
+same directly-generated key is a new decision, not covered by this one.
+
+**Consequence.** Backup export/import (SPEC §7.3, deferred from Phase 2) and
+the attachment pipeline (SPEC §7.1, Phase 3) are both unblocked. Implemented
+this session: backup export/import. The attachment pipeline's remaining
+work — EXIF/metadata stripping specifically — needs a decision of its own
+about which library handles it and whether it covers video containers (SPEC
+§7.1's own flag), so it is not automatically unblocked by this entry alone.

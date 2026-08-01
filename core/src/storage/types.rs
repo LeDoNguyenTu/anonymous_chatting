@@ -76,7 +76,11 @@ impl RetentionPolicy {
         }
     }
 
-    pub(super) fn as_str(&self) -> &'static str {
+    /// The wire form stored in `settings` and, since Phase 3, inside a backup
+    /// file — both are "persist this and read it back later" contexts with
+    /// the same forward-compatibility need, which is why this is `pub` rather
+    /// than storage-private.
+    pub fn as_str(&self) -> &'static str {
         match self {
             RetentionPolicy::Forever => "forever",
             RetentionPolicy::Days30 => "30d",
@@ -89,8 +93,9 @@ impl RetentionPolicy {
     ///
     /// An unrecognised value falls back to `Forever` rather than to a deleting
     /// policy. A build that does not understand a setting written by a newer
-    /// build must not destroy the user's history because of it.
-    pub(super) fn parse(s: &str) -> Self {
+    /// build must not destroy the user's history because of it. Applies
+    /// equally to a database's own settings row and to a restored backup.
+    pub fn parse(s: &str) -> Self {
         match s {
             "30d" => RetentionPolicy::Days30,
             "7d" => RetentionPolicy::Days7,
@@ -153,7 +158,13 @@ pub struct IdentityChange {
 }
 
 /// A contact and the trust state the Custody Strip reports.
-#[derive(Debug, Clone)]
+///
+/// `Serialize`/`Deserialize` are for the backup format (SPEC §7.3): a
+/// restored device should not force the user to re-verify everyone, since
+/// verification is a fact about the *other* party's key matching what the
+/// user confirmed, and that fact does not change when the identity moves to
+/// new hardware.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct StoredContact {
     /// Local identifier.
     pub id: String,

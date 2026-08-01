@@ -86,7 +86,8 @@ missing feature (test §8.6).
   5. encrypt        MLS application message
      │              AEAD + key agreement + signature per ciphersuite
      │
-  6. seal           sealed sender — relay cannot see who sent this (phase 3)
+  6. seal           sealed sender — relay cannot see who sent this (phase 4 —
+     │              moved from phase 3, 2026-08-02: it depends on Tor, below)
      │
   7. route          direct TLS, or Tor onion circuit (phase 4)
      │
