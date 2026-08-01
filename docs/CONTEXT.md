@@ -142,6 +142,13 @@ Each of these cost real debugging time. They are in `docs/DECISIONS.md` in full.
   (D-020).
 - **`starts_with` is not a host check.** `http://127.0.0.1.evil.com` is someone
   else's domain.
+- **An exact version pin constrains one dependency, not the graph** (D-029).
+  Only a lock file does that. Any crate outside the workspace needs its own
+  committed `Cargo.lock` — the Android JNI library in Phase 5 is the next one.
+- **`cargo audit` failing is information, not an obstacle** (D-030). Assess
+  each advisory for reachability, fix what upgrades fix, and list the rest in
+  `.cargo/audit.toml` *with a reason*. Never make one invisible. The four
+  accepted entries are re-reviewed on any `openmls` release.
 
 ## Two constraints that shape design decisions
 

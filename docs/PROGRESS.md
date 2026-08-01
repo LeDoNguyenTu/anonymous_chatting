@@ -17,6 +17,7 @@ Do not begin a phase before the previous phase meets its exit criteria.
 | **Branch** | `develop` |
 | **Blocked on** | nothing |
 | **Tests** | 76 passing |
+| **CI** | green — all five jobs |
 
 ---
 
@@ -229,6 +230,29 @@ were run together.
 5. **A lookalike loopback host.** `http://127.0.0.1.evil.com` is a registrable
    domain someone else controls, and a `starts_with` check treated it as
    loopback — disabling certificate pinning against an attacker's host.
+
+### CI, and what it caught
+
+All five jobs green. Getting there surfaced three faults, each only visible once
+the previous was fixed — the ordinary shape of unblocking a build that fails
+early.
+
+1. **A transitive dependency had drifted** (D-029). `tauri-build` was pinned;
+   its transitive `tauri-utils` was not, and `clients/desktop/src-tauri` sits
+   outside the workspace so it had no lock file of its own. An exact pin
+   constrains one dependency; only a lock file constrains the graph. Now
+   committed, with `--locked` in CI.
+2. **`cargo audit` failed with 19 advisories** (D-030). The guardrail working,
+   not misfiring. Two fixed by upgrading, eleven not reachable, four accepted
+   with reasoning in `.cargo/audit.toml`. One of the four —
+   RUSTSEC-2026-0072, a missing RFC 9180 zero-check in the HPKE backend — is a
+   real deviation and is now in `THREAT_MODEL.md` §4.
+3. **The declared app icon did not exist**, then existed in the wrong format.
+   `tauri.conf.json` had always referenced `icons/icon.png`; the old broken
+   build never got far enough to notice. Tauri needs RGBA, not RGB.
+
+The audit job also went from five minutes to five seconds by installing a
+prebuilt `cargo-audit` instead of compiling it every run.
 
 ### Manual checks still owed for Phase 1 exit
 
