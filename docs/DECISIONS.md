@@ -470,3 +470,72 @@ way, and the relay cannot read them regardless.
 
 **Acknowledgement is scoped to the inbox**, so possession of a message
 identifier is not on its own sufficient to delete another inbox's mail.
+
+---
+
+## D-022 — `openmls` panics on tampered ciphertext in debug builds
+**Date:** 2026-08-01 · **Status:** accepted with a recorded caveat · **Library finding**
+
+**What was found.** `openmls 0.8.1` carries a `debug_assert!(false, "Ciphertext
+decryption failed")` in `framing/private_message_in.rs` on the AEAD failure
+path. A blob whose ciphertext has been altered therefore:
+
+- **panics** in a debug build, and
+- returns `MessageDecryptionError::AeadError` in a release build, which Pouch
+  surfaces as `CryptoError::Decryption`.
+
+**Why this is not a security defect in the shipped product.** Release is what
+ships. In a release build the assertion is compiled out, tampering is detected,
+and the error reaches the user as a named failure rather than a silent drop —
+which is the property the threat model depends on. This is verified by running
+the tampering test under `--release` as well as under the default profile.
+
+**Why it is still worth recording.** The failure path is reachable by anyone who
+can modify a blob in transit — which, by the threat model, includes the relay
+operator. A developer running a debug build gets a crash on adversarial input.
+That is a denial of service against developers rather than users, but it is
+exactly the kind of thing that gets rediscovered six months later and
+misdiagnosed as a bug in this project's code.
+
+**How it is handled.** The test asserts the outcome in both profiles: the
+tampered blob must never be accepted as a message, and a *release* build must
+return an error rather than panic. It does not paper over the debug panic by
+skipping the test in debug builds, because a skipped test is how this stops
+being visible.
+
+**Not worked around in library code.** Wrapping `openmls` calls in
+`catch_unwind` was considered and rejected: `panic = "abort"` is set on the
+release profile, so it would do nothing where it would matter, and it would add
+a confusing layer around the one part of the system that must stay easy to
+reason about. If the debug panic becomes a practical obstacle, the fix belongs
+upstream.
+
+---
+
+## D-023 — MLS state is persisted as a serialized snapshot, not through a storage provider
+**Date:** 2026-08-01 · **Status:** accepted for Phase 1, to be revisited
+
+**Decision.** `PouchProvider` pairs `openmls`'s audited `RustCrypto` with
+`MemoryStorage`, and persists the whole MLS state by serializing the storage map
+into the SQLCipher database as one encrypted blob.
+
+**Why not `OpenMlsRustCrypto` directly.** Its storage field is private and it
+offers no way to be rebuilt from a snapshot, so a client built on it would lose
+every conversation on exit. `PouchProvider` is the same two components with the
+storage reachable — it implements no primitive and no storage logic of its own.
+
+**Why a snapshot rather than a real storage provider.** Implementing
+`StorageProvider` against SQLCipher directly is the better long-term answer and
+is the intended Phase 2 work. For Phase 1 it is a large amount of key-handling
+code standing between the project and a working messenger, and Prime Directive 4
+says ship narrow and working.
+
+**What it costs, stated plainly.** The whole state is rewritten on every save,
+which is O(total state) per message rather than O(change). At one-to-one scale
+this is milliseconds. It would not be acceptable for groups, which is why this
+entry says "to be revisited" rather than "settled".
+
+**What it does not cost.** Nothing about the security of the state at rest: the
+snapshot goes into the same SQLCipher database, under the same key, as
+everything else. A test asserts message plaintext does not survive inside the
+snapshot.

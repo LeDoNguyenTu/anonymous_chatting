@@ -1,0 +1,6 @@
+# `unwrap_used` and `expect_used` are warnings on the core crate: a panic in the
+# crypto path is a denial of service at best. In tests they are the correct way
+# to express "this must have worked", and a test that handles its own setup
+# failure gracefully is a test that can pass without testing anything.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
