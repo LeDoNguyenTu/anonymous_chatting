@@ -699,3 +699,98 @@ a smaller cost than handing every observer the send order of every conversation.
 **Why it was only found by an end-to-end test.** Every unit test sent messages
 in order, because in a unit test there is no relay to shuffle them. The failure
 needed the real server's real ordering to appear.
+
+---
+
+## D-029 — A crate outside the workspace needs its own committed lock file
+**Date:** 2026-08-01 · **Status:** accepted · **Bug found by CI**
+
+**What broke.** The Tauri shell stopped compiling in CI with four type errors
+*inside `tauri-build`* — a dependency, not our code. `tauri-build` was pinned at
+`=2.0.4` exactly as D-016 requires, but its transitive `tauri-utils` was not
+pinned by anything, so CI resolved a newer `tauri-utils` whose
+`external_binaries` signature had gained an argument.
+
+**The lesson, which generalises.** An exact pin on a *direct* dependency
+constrains that dependency and nothing beneath it. Only a lock file constrains
+the graph. The workspace has always had `Cargo.lock` committed, so this never
+came up there — but `clients/desktop/src-tauri` is deliberately excluded from
+the workspace (it needs WebKitGTK, which most CI jobs do not install), and an
+excluded crate resolves independently. It had no lock file, and `.gitignore`
+would not have stopped one existing — nobody had generated one.
+
+**Fix.** `clients/desktop/src-tauri/Cargo.lock` is generated and committed, its
+`.gitignore` says explicitly why it is not ignored, and the CI job runs
+`cargo check --locked` so a lock file that has drifted fails the build rather
+than being silently regenerated.
+
+`tauri` and `tauri-build` were also moved to current releases (2.11.5 and 2.6.3)
+so the pinned versions are ones that actually work together.
+
+**Where else this applies.** Any future crate placed outside the workspace —
+the Android JNI library in Phase 5 is the obvious candidate — needs the same
+treatment on the day it is created.
+
+---
+
+## D-030 — Accepting four hpke-rs advisories, and what would change that
+**Date:** 2026-08-01 · **Status:** accepted with review triggers
+
+**What CI found.** `cargo audit` failed the build with 19 advisories. That is
+the guardrail working, not the guardrail misfiring, and the fix is not to
+silence it. Each was assessed for reachability and impact; the exception list
+with per-advisory reasoning is `.cargo/audit.toml`.
+
+**Fixed by upgrading:** `anyhow` 1.0.95 → 1.0.104 (RUSTSEC-2026-0190,
+unsoundness in `Error::downcast_mut`), `tokio` 1.42.0 → 1.53.1
+(RUSTSEC-2025-0023).
+
+**Not reachable at all:** eleven advisories against `libcrux-*` crates that
+appear in `Cargo.lock` but are never compiled. `cargo-audit` reads the lock
+file, which records resolutions for optional dependencies no enabled feature
+selects. Verified three ways: `cargo tree -i` finds no edge across every target
+and every edge kind, and no build artifact for them exists after a full build.
+They enter through `hpke-rs`'s libcrux backend, which `openmls_rust_crypto`
+does not enable.
+
+**Genuinely reachable, and accepted for now — the four that matter:**
+
+`openmls_rust_crypto 0.5.0` requires `hpke-rs ^0.5.1`. Every one of these is
+fixed in `hpke-rs 0.6.0`, which is semver-incompatible, and there is no newer
+`openmls_rust_crypto` to pull it in. The project is pinned by its upstream.
+
+| Advisory | What it is | Why it is accepted |
+|---|---|---|
+| RUSTSEC-2026-0071 | Nonce reuse after 2³² operations on one reusable HPKE context | MLS uses HPKE single-shot, for key packages and Welcome. Not a context driven four billion times. |
+| RUSTSEC-2026-0070 | Panic when `HpkeExport` is the AEAD | The ciphersuite sets AES-128-GCM. `HpkeExport` is never selected. |
+| RUSTSEC-2026-0069 | Wrong length encoding above 65535-byte exports | MLS exporter outputs are tens of bytes. |
+| **RUSTSEC-2026-0072** | **Missing check that the X25519 shared secret is non-zero, in the RustCrypto backend this project uses** | **See below. This one has real substance.** |
+
+**On RUSTSEC-2026-0072, honestly.** RFC 9180 requires HPKE implementations to
+reject an all-zero Diffie-Hellman shared secret, and the backend in use does
+not perform that check. This is a genuine deviation from the specification the
+protocol is built on, in code this project actually executes. It is accepted
+because the alternatives are worse: vendoring or patching an audited crypto
+library to work around it would put this project in the business of maintaining
+cryptographic code, which Prime Directive 1 exists to prevent, and abandoning
+`openmls` over it would discard the entire protocol layer.
+
+It is recorded in `docs/THREAT_MODEL.md` rather than only here, because it is
+the kind of thing a reader evaluating this project deserves to find without
+reading a decision log.
+
+**Rejected: raising the audit to warnings-only.** That would satisfy CI by
+making the check meaningless. An advisory that cannot be fixed should be listed
+with a reason, not made invisible.
+
+**Review triggers — the entries above are re-examined when any of these occur:**
+
+- `openmls` or `openmls_rust_crypto` publishes a release. This is the one that
+  clears most of the list, and it should be checked on every upgrade.
+- The crypto backend changes. Everything marked "not reachable" is reachable
+  again the moment the libcrux backend is enabled.
+- Phase 5 lands the Android client. RUSTSEC-2026-0212 concerns constant-time
+  operations on aarch64 and is currently ignored as unreachable; aarch64 is
+  what Android runs on.
+- Real TLS lands. RUSTSEC-2025-0134 (`rustls-pemfile` unmaintained) is ignored
+  because nothing parses PEM today.

@@ -7,15 +7,23 @@ rust-version = "1.82"
 license = "AGPL-3.0-or-later"
 authors = ["Le Do Nguyen Tu"]
 
-# Not a workspace member: it needs GTK and WebKitGTK at build time, which the
-# headless CI job does not install. Built by the dedicated desktop CI job.
+# Not a workspace member: it needs GTK and WebKitGTK at build time, which most
+# jobs do not install. Built by the dedicated desktop CI job.
+#
+# Because it is outside the workspace it needs its own Cargo.lock, and that lock
+# file is committed. Without it every CI run re-resolves transitive versions
+# from scratch, which is how this crate broke: `tauri-build` was pinned but its
+# transitive `tauri-utils` was not, so a newer `tauri-utils` with a changed
+# function signature was picked up and the build stopped compiling. Exact pins
+# on direct dependencies do not constrain the graph beneath them — only a lock
+# file does. See DECISIONS.md D-029.
 
 [build-dependencies]
-tauri-build = { version = "=2.0.4", features = [] }
+tauri-build = { version = "=2.6.3", features = [] }
 
 [dependencies]
 pouch-core = { path = "../../../core" }
-tauri = { version = "=2.1.1", features = [] }
+tauri = { version = "=2.11.5", features = [] }
 serde = { version = "=1.0.216", features = ["derive"] }
 serde_json = "=1.0.134"
 

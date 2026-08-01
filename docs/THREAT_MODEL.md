@@ -63,6 +63,7 @@ anything here with anything that matters.
 | **Targeted supply-chain attack** on a pinned dependency | Exact version pinning and `cargo audit` reduce exposure to *known* vulnerabilities and to surprise upgrades. Neither detects a deliberate backdoor in a dependency that has not been discovered yet. Pouch has no reproducible-build story yet. |
 | **Traffic analysis of message frequency** over a long observation window | Padding blunts size. It does nothing about how often a user connects. Cover traffic is a Phase 4 option, not a default. |
 | **A compromised OS keystore** or a platform-level backdoor | Pouch trusts the keystore. If the keystore lies, the local database key is exposed. |
+| **A known deviation from RFC 9180 in the HPKE backend** | The `hpke-rs` version that `openmls` pins does not check that an X25519 Diffie-Hellman shared secret is non-zero, which RFC 9180 requires (RUSTSEC-2026-0072). The fix exists upstream in a release `openmls` cannot yet use. Recorded rather than hidden; full reasoning in `DECISIONS.md` D-030. |
 | **Denial of service** — the relay refusing to accept or deliver | The relay is trusted for availability and for nothing else. A hostile operator can stop messages. It cannot read them. |
 
 ## 5. Metadata: three honest tiers
@@ -133,3 +134,4 @@ adversary, that difference outweighs every policy advantage listed above.
 | Phase | What changed in this model |
 |---|---|
 | 0 | Initial model written from the specification. No code paths exist yet, so nothing here is yet verified by a running test. |
+| 1 | Relay blindness now verified by an automated test against a real conversation, not asserted. Local storage encryption verified by reading the database file. Added the RFC 9180 deviation above, found by `cargo audit` — an unfixable-for-now advisory in a dependency is part of the threat model, not a CI nuisance. |

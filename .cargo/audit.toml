@@ -1,0 +1,115 @@
+# cargo-audit configuration.
+#
+# SPEC §2.1 requires `cargo audit` to fail the build on known vulnerabilities.
+# It does. This file is the narrow, documented exception list for advisories
+# that cannot currently be fixed, and every entry below states *why* — an
+# undocumented ignore is indistinguishable from not running the audit at all.
+#
+# The rule for adding an entry: an advisory may be ignored only if it cannot be
+# resolved by upgrading, AND the exposure has been reasoned about and written
+# down here. "It is noisy" is not a reason. Every entry is revisited whenever
+# `openmls` is upgraded, because most of them exist only because `openmls`
+# pins them.
+#
+# Full reasoning, including which advisories are reachable at all, is in
+# docs/DECISIONS.md D-030.
+
+[advisories]
+ignore = [
+    # ---------------------------------------------------------------------
+    # Blocked upstream: openmls_rust_crypto 0.5.0 requires hpke-rs ^0.5.1,
+    # and the fixes landed in hpke-rs 0.6.0. There is no newer
+    # openmls_rust_crypto. These cannot be resolved without either a new
+    # openmls release or vendoring the crypto provider, and vendoring an
+    # audited crypto library to dodge an advisory is a worse outcome than the
+    # advisory.
+    # ---------------------------------------------------------------------
+
+    # Nonce reuse in a *reusable* HPKE context after 2^32 seal/open operations
+    # on that one context. MLS uses HPKE for single-shot operations — key
+    # package encryption and Welcome — not a long-lived context driven four
+    # billion times. Reachable in principle, unreachable in this usage.
+    "RUSTSEC-2026-0071",
+
+    # Panic when an HPKE context configured with HpkeExport as its AEAD is
+    # asked to seal or open. Pouch's ciphersuite sets AES-128-GCM as the AEAD;
+    # HpkeExport is never selected.
+    "RUSTSEC-2026-0070",
+
+    # Incorrect length encoding when exporting a secret longer than 65535
+    # bytes. MLS exporter outputs are tens of bytes.
+    "RUSTSEC-2026-0069",
+
+    # Missing check that the X25519 shared secret is non-zero, in the
+    # RustCrypto backend that this project does use. This is the one with real
+    # substance — see D-030, which explains why it is accepted for now and
+    # what would change that.
+    "RUSTSEC-2026-0072",
+
+    # ---------------------------------------------------------------------
+    # libcrux, pulled in transitively by hpke-rs. Same upstream block.
+    # ---------------------------------------------------------------------
+
+    # SHAKE incremental-squeeze bugs. Pouch's ciphersuite uses SHA-256, not
+    # SHA-3/SHAKE, and both advisories state they do not affect ML-KEM or
+    # ML-DSA use either. No SHAKE XOF call exists in this project.
+    "RUSTSEC-2026-0074",
+    "RUSTSEC-2026-0207",
+    # AVX2 SHAKE-256 out-of-bounds panic, same reasoning.
+    "RUSTSEC-2026-0208",
+
+    # Constant-time swap/select may be incorrect on aarch64. Not reachable
+    # today — nothing in the compiled graph calls it — but it is the entry to
+    # re-check first when the Android client lands in Phase 5, since that is
+    # aarch64.
+    "RUSTSEC-2026-0212",
+
+    # ---------------------------------------------------------------------
+    # libcrux crates that are in Cargo.lock but are never compiled.
+    #
+    # cargo-audit reads the lock file, which records the resolution for
+    # optional dependencies that no enabled feature selects. Verified not
+    # reachable: `cargo tree -i <crate> --target all -e all` reports nothing
+    # for each, and no build artifact for them exists after a full build.
+    # They enter the lock through hpke-rs's libcrux backend, which
+    # openmls_rust_crypto does not enable — it uses the RustCrypto backend.
+    #
+    # Re-verify these the moment the crypto backend changes.
+    # ---------------------------------------------------------------------
+
+    # Non-constant-time AES-GCM tag check, and unbounded AAD length.
+    "RUSTSEC-2026-0211",
+    "RUSTSEC-2026-0209",
+    # libcrux-aesgcm renamed to libcrux-aes. A rename notice, not a defect.
+    "RUSTSEC-2026-0210",
+    # Panic on overlong ChaCha20-Poly1305 ciphertext buffer.
+    "RUSTSEC-2026-0124",
+    # X25519 secret validation missing length check and clamping.
+    "RUSTSEC-2026-0023",
+    # Panic in standalone Poly1305 MAC operations.
+    "RUSTSEC-2026-0073",
+
+    # ---------------------------------------------------------------------
+    # rand 0.8.5, required by openmls_rust_crypto. rand 0.9/0.10 is a
+    # semver-incompatible jump the whole MLS stack would have to make
+    # together.
+    # ---------------------------------------------------------------------
+
+    # Unsoundness when a *custom logger* calls rand::rng() re-entrantly. Pouch
+    # installs no logger at all — the relay explicitly disables logging (SPEC
+    # §2.3) and the core logs nothing. The precondition cannot occur.
+    "RUSTSEC-2026-0097",
+
+    # ---------------------------------------------------------------------
+    # Unmaintained crates. Not vulnerabilities; flagged so they stay visible.
+    # ---------------------------------------------------------------------
+
+    # rustls-pemfile, via reqwest 0.12. Parses PEM. Pouch does not parse PEM
+    # today: Phases 1–3 pin the relay by SPKI hash rather than reading a
+    # certificate file (D-017). Re-check when real TLS lands.
+    "RUSTSEC-2025-0134",
+
+    # proc-macro-error2 — a build-time macro helper, not in the compiled
+    # dependency graph of any binary.
+    "RUSTSEC-2026-0173",
+]

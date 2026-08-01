@@ -51,9 +51,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: rustsec/audit-check@v2
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Run cargo-audit directly rather than through an action wrapper.
+      #
+      # The wrapper posts its result as a GitHub check run, which needs a token
+      # permission this workflow does not grant — so it failed with "Resource
+      # not accessible by integration" *after* completing the scan, turning a
+      # permissions problem into what looked like an audit failure. Running the
+      # tool means the job's own exit status is the result, with nothing in
+      # between to misreport it.
+      #
+      # The advisories that cannot currently be fixed are listed, each with its
+      # reasoning, in .cargo/audit.toml. That file is the audit's exception
+      # list and is reviewed whenever openmls is upgraded.
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      - name: Audit dependencies
+        run: cargo audit
 
   frontend:
     name: Desktop frontend — typecheck, test, build
@@ -105,4 +120,9 @@ jobs:
           npm run build
       - name: Check the shell compiles
         working-directory: clients/desktop/src-tauri
-        run: cargo check --all-targets
+        # --locked, because this crate is outside the workspace and its
+        # committed Cargo.lock is the only thing pinning its transitive
+        # dependencies. Without it CI re-resolves and can pick up a
+        # semver-compatible but source-incompatible upgrade, which is exactly
+        # how this job broke (D-029).
+        run: cargo check --all-targets --locked
