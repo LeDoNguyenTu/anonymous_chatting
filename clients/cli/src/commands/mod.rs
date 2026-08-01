@@ -9,3 +9,4 @@ pub mod contacts;
 pub mod device;
 pub mod identity;
 pub mod messaging;
+pub mod storage;

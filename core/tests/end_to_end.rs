@@ -54,6 +54,69 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
 }
 
 #[tokio::test]
+async fn a_passphrase_re_encrypts_the_database_and_the_old_key_stops_working() {
+    // SPEC §7.2: a passphrase via Argon2id, for users who opt in. The claim
+    // being tested is the one that matters — after turning it on, the key that
+    // used to open the file does not, and the message history is still there
+    // for the passphrase that does.
+    use pouch_core::keying;
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let (addr, _) = spawn_relay(dir.path()).await;
+    let relay = || RelayConfig::insecure_local(format!("http://{addr}"));
+
+    let brian_db = dir.path().join("brian.db").to_string_lossy().into_owned();
+    let mai_db = dir.path().join("mai.db").to_string_lossy().into_owned();
+
+    let mut brian = Pouch::create("Brian", &brian_db, &mut key(0x11), relay()).expect("brian");
+    let mut mai = Pouch::create("Mai", &mai_db, &mut key(0x22), relay()).expect("mai");
+    let code = mai.invite_code().expect("code");
+    let conversation = brian.add_contact("Mai", &code).await.expect("adds");
+    brian
+        .send_message(&conversation, "worth protecting")
+        .await
+        .expect("sends");
+
+    assert!(!brian.is_passphrase_protected().expect("reads"));
+    brian
+        .set_passphrase("correct horse battery staple")
+        .expect("sets a passphrase");
+    assert!(brian.is_passphrase_protected().expect("reads"));
+    drop(brian);
+
+    // The key the database was created with is now worthless.
+    assert!(
+        Pouch::open(&brian_db, &mut key(0x11), relay()).is_err(),
+        "the original key still opens a passphrase-protected database"
+    );
+
+    // The placeholder key file is gone, so the disk holds nothing that becomes
+    // the key.
+    assert!(
+        !keying::device_key_path(&brian_db).exists(),
+        "the device key file survived, so the passphrase protects nothing"
+    );
+
+    // And an unlock without the passphrase refuses rather than falling back.
+    assert!(keying::unlock(&brian_db, None).is_err());
+
+    // The passphrase opens it, and the history survived the re-encryption.
+    let mut derived =
+        keying::unlock(&brian_db, Some("correct horse battery staple")).expect("derives the key");
+    let brian = Pouch::open(&brian_db, &mut derived, relay()).expect("opens with the passphrase");
+    let thread = brian.messages(&conversation).expect("reads");
+    assert_eq!(thread.len(), 1);
+    assert_eq!(thread[0].body, "worth protecting");
+
+    // A wrong passphrase derives a different key, which does not open it.
+    let mut wrong = keying::unlock(&brian_db, Some("nearly the right one")).expect("derives");
+    assert!(
+        Pouch::open(&brian_db, &mut wrong, relay()).is_err(),
+        "a wrong passphrase opened the database"
+    );
+}
+
+#[tokio::test]
 async fn a_message_written_offline_is_delivered_after_reconnecting() {
     // SPEC §8.2: offline queue and retry on reconnect. Phase 1 returned an
     // error whose copy already promised "will send when you reconnect", and

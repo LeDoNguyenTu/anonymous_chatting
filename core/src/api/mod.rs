@@ -46,6 +46,12 @@ pub struct Pouch {
     provider: PouchProvider,
     store: LocalStore,
     relay: RelayClient,
+    /// Where the database lives.
+    ///
+    /// Kept because changing how the database is protected has to update the
+    /// keying sidecar beside it, and the alternative is making every client
+    /// pass the path back in on a call that has nothing else to do with it.
+    db_path: String,
     /// Live conversations, keyed by conversation id.
     ///
     /// Rebuilt from the MLS snapshot on open. Held in memory because an
@@ -84,6 +90,7 @@ impl Pouch {
             store,
             relay: RelayClient::new(relay)?,
             conversations: HashMap::new(),
+            db_path: db_path.to_string(),
         })
     }
 
@@ -118,6 +125,7 @@ impl Pouch {
             store,
             relay: RelayClient::new(relay)?,
             conversations: HashMap::new(),
+            db_path: db_path.to_string(),
         };
         pouch.reload_conversations()?;
 

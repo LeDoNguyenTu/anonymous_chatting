@@ -93,6 +93,27 @@ impl LocalStore {
         Ok(store)
     }
 
+    /// Re-encrypts the database under a new key.
+    ///
+    /// `PRAGMA rekey` rewrites every page with the new key, so the change is
+    /// complete when it returns rather than applying to pages written later.
+    /// A half-rekeyed database would be unopenable under either key, which is
+    /// why this is one statement and not a copy-and-swap.
+    ///
+    /// `new_key` is zeroized before this returns, on both paths.
+    pub fn rekey(&self, new_key: &mut [u8]) -> Result<(), StorageError> {
+        let mut hex_key = hex::encode(&new_key);
+        let mut pragma = format!("PRAGMA rekey = \"x'{hex_key}'\";");
+        let result = self.conn.execute_batch(&pragma);
+
+        new_key.zeroize();
+        hex_key.zeroize();
+        pragma.zeroize();
+
+        result?;
+        Ok(())
+    }
+
     /// Destroys everything: identity, keys, contacts, and messages.
     ///
     /// `VACUUM` is not optional here. Without it SQLite leaves the deleted
