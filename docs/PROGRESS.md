@@ -14,7 +14,7 @@ Do not begin a phase before the previous phase meets its exit criteria.
 |---|---|
 | **Phase complete** | 0 — Foundation |
 | **Phase in progress** | 1 — Working 1:1 encrypted chat. **Core, relay and CLI done and working end to end. Desktop screens are what remain.** |
-| **Branch** | `claude/private-messaging-app-xjc6n1` |
+| **Branch** | `develop` |
 | **Blocked on** | nothing |
 | **Tests** | 76 passing |
 
@@ -250,5 +250,5 @@ Run these on two real machines before calling the milestone done:
 - `docs/DECISIONS.md` is append-only. Superseded entries stay; a new entry
   supersedes them.
 - Never add a dependency without pinning it exactly and recording why.
-- `CLAUDE.md` holds the working context for resuming a session without re-reading
-  the whole history.
+- `docs/CONTEXT.md` holds the working context for resuming a session without
+  re-reading the whole history.

@@ -154,6 +154,7 @@ workspace so the rest builds on a headless machine.
 | [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) | Plain language, no hedging |
 | [`docs/DESIGN_SYSTEM.md`](docs/DESIGN_SYSTEM.md) | Tokens, the Custody Strip, the Manifest, copy rules |
 | [`docs/PROGRESS.md`](docs/PROGRESS.md) | Session log — what landed, what is next |
+| [`docs/CONTEXT.md`](docs/CONTEXT.md) | Working context: the rules, the code map, lessons learned |
 
 ## Licence
 

@@ -47,7 +47,7 @@ EXCLUDES=(
   ':(exclude)docs/THREAT_MODEL.md'
   ':(exclude)docs/PROGRESS.md'
   ':(exclude)README.md'
-  ':(exclude)CLAUDE.md'
+  ':(exclude)docs/CONTEXT.md'
   ':(exclude)SPEC.md'
 )
 

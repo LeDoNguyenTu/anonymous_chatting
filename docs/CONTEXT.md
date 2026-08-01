@@ -1,6 +1,9 @@
 # Working context for Pouch
 
-Read this, then `docs/PROGRESS.md`, then SPEC §1, §2, and the section for the
+Start-of-session notes: what this project is, the rules that govern it, and
+where the work stands.
+
+Read this, then `PROGRESS.md`, then SPEC §1, §2, and the section for the
 current phase. That is enough to resume without re-reading session history.
 
 ---
@@ -31,9 +34,8 @@ with it, say so and quote the section.
 ## Conventions that are easy to get wrong
 
 - **Git author is `Le Do Nguyen Tu <ledonguyentu@gmail.com>`.** Commits carry no
-  co-author trailer and no assistant attribution of any kind. This is a standing
-  instruction from the project owner.
-- **Branch:** `claude/private-messaging-app-xjc6n1`. Push after each phase.
+  co-author trailers and no third-party attribution of any kind.
+- **Branch:** `develop`. Push after each phase.
 - **Pin every dependency with `=`.** Record any version change in
   `docs/DECISIONS.md`. `openmls` breaks its API across minor versions.
 - **`docs/DECISIONS.md` is append-only.** Supersede, never edit away.
