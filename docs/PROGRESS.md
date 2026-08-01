@@ -12,12 +12,18 @@ Do not begin a phase before the previous phase meets its exit criteria.
 
 | | |
 |---|---|
-| **Phase complete** | 0 — Foundation · 1 — Working 1:1 encrypted chat (code complete) |
-| **Phase next** | 2 — Storage control and hardening |
-| **Branches** | `main` (repository default) and `develop`, both at the same commit |
-| **Blocked on** | nothing |
-| **Tests** | 87 Rust on Linux · 86 on Windows · 24 frontend |
-| **CI** | green on `main` and `develop` — all five jobs |
+| **Phase complete** | 0 — Foundation · 1 — Working 1:1 encrypted chat · 2 — Storage control and hardening, minus one deliberately deferred item (below) |
+| **Phase next** | 3 — Attachments and sealed sender |
+| **Branches** | `main` (repository default) and `develop`, both at the same commit, pushed |
+| **Blocked on** | nothing for Phase 3's sealed-sender half; the attachment-pipeline half needs the same AEAD-outside-MLS decision backup export does — see "Deliberately not built" below |
+| **Tests** | 96 Rust core + 7 end-to-end + 12 relay + 4 server-blindness = 119 Rust · 34 frontend |
+| **CI** | last known green on `main` and `develop` at the Phase 1 commit; Phase 2's commits have not yet run through CI — see note below |
+
+**Note on CI.** Everything in this section was verified locally on a Windows
+workstation (`cargo fmt`, `clippy -D warnings`, the full test suite, both
+guardrail scripts, `npm run typecheck`/`test`/`build`) — not by watching a CI
+run. Confirm the GitHub Actions run is green after this push before treating
+Phase 2 as done in the same sense Phase 0 and 1 were.
 
 ### Owed to the project owner
 
@@ -314,6 +320,106 @@ prove has been proved; what needs two machines or a running GUI has not.
 - [ ] Two desktop clients on different machines exchange text
 - [ ] Safety numbers compared on two physical devices
 - [ ] Keyboard-only navigation completes a full send — needs the GUI running
+
+---
+
+## Phase 2 — Storage control and hardening · 2026-08-02
+
+### Scope (SPEC §9) and what happened to each item
+
+| Item | State |
+|---|---|
+| Disappearing messages, per conversation | **done** |
+| Retention settings (forever / 30d / 7d / 24h) | **done** |
+| Wipe-all | **done** — already existed from Phase 1; extended to cover every table Phase 2 added |
+| Passphrase option with Argon2id | **done** |
+| Offline queue and retry on reconnect | **done** — SPEC §8.2 names this explicitly; Phase 1 left it as a promise in error copy ("will send when you reconnect") that nothing kept |
+| Identity change detection and the warning modal | **done** |
+| Encrypted backup export and import | **not done — deliberately.** See below. |
+| Full test suite, §8.1/§8.2/§8.8 | **done**, including two gaps found and closed this session — see below |
+
+### Deliberately not built: encrypted backup export/import
+
+SPEC §7.3 and screen 10 (§6.7.10) describe it, and it stayed out of this phase
+on purpose rather than by oversight. The reason is D-006, corrected this
+session: this project's standing rule is that application code never invokes
+an AEAD directly or picks a nonce — MLS owns that entirely, and the one
+documented exception path (`D-013`) turned out on inspection to be a stale
+cross-reference to the Tor-vs-VPN decision, not an actual authorization for
+anything. A backup file is not an MLS group message, so encrypting one
+necessarily means an AEAD invocation this project has never actually decided
+how to do safely. That is SPEC §2.6's stop-and-ask list, item one and item
+seven, at the same time: a construction decision, and a document (D-006)
+that turns out to contradict itself once read closely.
+
+The attachment pipeline that opens Phase 3 has the identical shape — a file,
+not a group message — so this decision has to be made once, before either
+backup or attachments, not twice. **This is the one thing this session
+believes needs the project owner's judgment before code gets written**,
+not because the engineering is hard, but because SPEC's own guardrails name
+this exact class of decision as one to stop for.
+
+The UI does not hide the gap. The Privacy and storage screen states plainly,
+under "Not in this build," that encrypted backup is not implemented and why
+in one sentence — the same honesty rule the Manifest and RelayVisibility
+panels already follow for stages that have not landed yet.
+
+### Two test-coverage gaps found and closed this session
+
+Neither was a bug in Phase 2's own new code; both were things Phase 1 had
+never had reason to expose.
+
+1. **`INSERT OR REPLACE` was silently erasing conversations (D-033).**
+   `put_contact` and `put_conversation` used it since Phase 1. SQLite
+   implements `REPLACE` as delete-then-insert, foreign keys are enforced with
+   `ON DELETE CASCADE`, and re-adding a contact already known — which the
+   Hello-handling path does on every message after the first from someone —
+   deleted the contact row and cascaded through `conversations` into
+   `messages`. The entire thread with that person was gone, silently, as a
+   side effect of them saying hello a second time. No Phase 1 test exercised
+   the sequence "contact exists, has a conversation, gets re-added," because
+   no fixture happened to do that. Found while writing a Phase 2 test helper
+   that legitimately needed to. Fixed as an upsert that deliberately leaves
+   `verified` and `public_key` alone on conflict — touching either would open
+   a second, quieter route around the identity-change warning and the
+   verification rule.
+2. **SPEC §8.1's "key rotation" requirement had no test.** Nothing asserted
+   that MLS's per-message ratchet was actually advancing — every existing
+   test used a fresh conversation per message, so two messages were never
+   compared to each other. Closed with the one property observable from
+   outside `openmls` without touching its internals: identical plaintext,
+   encrypted twice in a row, must not produce identical ciphertext.
+
+### Manual check owed for Phase 2
+
+- [ ] **Identity change modal, on a real screen.** Covered by an in-crate test
+  that drives the API surface directly (`core/src/api/storage_controls.rs`)
+  and by a component test rendering the modal to static markup
+  (`IdentityChangeModal.test.tsx`), because the GUI cannot be launched in this
+  environment. Neither is a substitute for seeing the actual interrupt-modal
+  behavior in a running window. SPEC §9's Phase 2 exit criteria names this
+  explicitly: "identity change modal verified manually."
+
+### Verified, this session, on a Windows workstation
+
+```
+cargo fmt --all -- --check          clean
+cargo clippy --workspace --all-targets -- -D warnings   clean
+cargo test --workspace              119 passed, 0 failed
+npm run typecheck / test / build    clean · 34/34 · builds
+scripts/check-guardrails.sh         4/4 groups pass
+scripts/check-contrast.mjs          23/23 pass
+```
+
+Also run manually against a live relay, not only compiled: the offline
+queue (send while unreachable, confirm it queues, reconnect, confirm it
+flushes and the peer decrypts it), retention deleting on a real clock,
+disappearing-messages override, and passphrase protection end to end —
+including that the pre-passphrase key stops opening the database and a
+missing passphrase refuses rather than silently falling back to the
+placeholder key. The exact commands are in `docs/DECISIONS.md` D-031–D-035
+and in the CLI's own `--help` text (`keep`, `disappear`, `queue`, `changes`,
+`acknowledge`, `passphrase`).
 
 ---
 

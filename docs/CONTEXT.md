@@ -82,7 +82,7 @@ a code defect without checking that first.
 
 ## Settled decisions worth not relitigating
 
-Full reasoning is in `docs/DECISIONS.md` (D-001…D-018). The short version:
+Full reasoning is in `docs/DECISIONS.md` (D-001…D-035). The short version:
 
 - Name is **Pouch** (D-015); "Courier" in the spec was a placeholder.
 - MLS via `openmls =0.8.1`, not Signal Protocol (D-002).
@@ -92,39 +92,66 @@ Full reasoning is in `docs/DECISIONS.md` (D-001…D-018). The short version:
 - Cipher cascading is permanently rejected (D-005). Hybrid X25519 + ML-KEM-768
   is the only legitimate combining (D-004).
 - AEAD is only ever invoked through MLS; application code never picks a nonce
-  (D-006).
+  (D-006). **No decision yet authorizes the one place this necessarily has to
+  change** — the attachment pipeline and encrypted backup both encrypt a file,
+  not a group message. Either is a stop-and-ask (SPEC §2.6) the day it starts,
+  not something to infer from D-006's general shape.
 - Relay stores four fields, `message_id` random rather than sequential (D-010).
 - Compress → pad → encrypt, each payload compressed in isolation (D-009).
 - Phases 1–3 use a self-signed relay certificate pinned by SPKI hash (D-017).
 - SHA-256 is a hash, not encryption (D-001). It appears only inside HKDF.
+- The offline queue stores ciphertext, never plaintext (D-031) — encrypting
+  advances the MLS ratchet, so a retry re-POSTs the blob rather than
+  re-encrypting it.
+- `secure_delete` is on for every open, not only at wipe (D-032) — retention
+  exists to limit what a later compromise can reach, and an unlinked-but-not-
+  overwritten row defeats that between deletes.
+- A passphrase-protected database with no passphrase supplied is a hard error,
+  never a fallback to the placeholder key (D-035).
 
 ## Where things stand
 
-Phases 0 and 1 are code complete: relay, core, CLI, and the desktop client.
-87 Rust tests and 24 frontend tests pass, CI is green on `main` and `develop`.
-**Phase 2 — storage control and hardening — is next.**
+Phases 0, 1, and 2 are code complete, with one deliberate exception: encrypted
+backup export/import is not built (see the D-006 note above — it needs a
+decision this session did not have standing to make unilaterally). 119 Rust
+tests and 34 frontend tests pass, verified locally on Windows; **the GitHub
+Actions run for Phase 2's commits has not yet been observed** — confirm it
+before trusting this the way Phase 0/1's "CI green" was trusted.
+**Phase 3 — attachments and sealed sender — is next**, and its attachment half
+is blocked on the same AEAD-outside-MLS decision as backup.
 
 Full detail, the runnable demo, the manual checks still owed, and the ordered
 list of what is next are in `docs/PROGRESS.md`. Read that before starting work.
 
 ## The map of the code
 
+`core/src/api/` and `core/src/storage/` are directories, not single files —
+have been since Phase 1. If you find yourself looking for `api.rs` or
+`storage.rs`, that is this table having been wrong before; it is fixed now.
+
 | File | What lives there |
 |---|---|
-| `core/src/api.rs` | `Pouch` — the only type clients touch. Start here. |
+| `core/src/api/mod.rs` | `Pouch` — the only type clients touch. Start here. |
+| `core/src/api/storage_controls.rs` | Retention, disappearing messages, identity-change acknowledgement, passphrase set/clear |
+| `core/src/api/messaging.rs` | Send, receive, and `flush_outbox` — the offline-queue retry |
 | `core/src/crypto/identity.rs` | Identity creation, invite codes |
 | `core/src/crypto/session.rs` | MLS groups, encrypt, decrypt, ratchet config |
 | `core/src/crypto/safety_number.rs` | 60-digit out-of-band verification |
 | `core/src/crypto/provider.rs` | MLS provider with reachable, snapshottable storage |
-| `core/src/storage.rs` | SQLCipher. Holds plaintext and keys. |
+| `core/src/storage/mod.rs` | SQLCipher open/wipe/rekey. Holds plaintext and keys. |
+| `core/src/storage/schema.rs` | Versioned migrations, tracked in `PRAGMA user_version` |
+| `core/src/storage/settings.rs` | Retention policy, per-conversation disappearing messages, purge |
+| `core/src/storage/outbox.rs` | The offline queue's storage — holds ciphertext, not plaintext |
 | `core/src/transport.rs` | Relay client, pinning policy |
 | `core/src/manifest.rs` | The per-message record of what actually ran |
+| `core/src/keying.rs` | Where the database key comes from: device-file placeholder or Argon2id passphrase. OS keystore route still not implemented — see D-035. |
 | `server/src/store.rs` | The relay's four columns |
 | `server/src/http.rs` | Three endpoints, no logging middleware |
-| `core/src/keying.rs` | Where the database key comes from. **Phase 2 starts here.** |
-| `clients/cli/src/main.rs` | Headless client, eleven commands |
-| `clients/desktop/src-tauri/src/commands.rs` | 17 IPC commands, each one `Pouch` call |
+| `clients/cli/src/commands/storage.rs` | `keep`, `disappear`, `queue`, `changes`, `acknowledge`, `passphrase` |
+| `clients/desktop/src-tauri/src/commands.rs` | 28 IPC commands, each one `Pouch` call |
 | `clients/desktop/src/lib/bridge.ts` | The typed IPC boundary. No passthrough by design. |
+| `clients/desktop/src/screens/PrivacyStorage.tsx` | Screen 7, SPEC §6.7.7 |
+| `clients/desktop/src/components/IdentityChangeModal.tsx` | Screen 6, SPEC §6.7.6 — the one modal in the product |
 
 ## Hard-won lessons from Phase 1
 
