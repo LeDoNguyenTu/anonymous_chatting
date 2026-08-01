@@ -96,5 +96,59 @@ Full reasoning is in `docs/DECISIONS.md` (D-001…D-018). The short version:
 
 ## Where things stand
 
-See `docs/PROGRESS.md` for the current phase, what landed, and the ordered list
-of what is next. Phase 0 is complete; Phase 1 is in progress.
+Phase 0 complete. Phase 1's **core, relay and CLI are done and working end to
+end**; the desktop screens are what remain. 76 tests pass. Full detail, the
+runnable demo, and the ordered list of what is next are in `docs/PROGRESS.md` —
+read that before starting work.
+
+## The map of the code
+
+| File | What lives there |
+|---|---|
+| `core/src/api.rs` | `Pouch` — the only type clients touch. Start here. |
+| `core/src/crypto/identity.rs` | Identity creation, invite codes |
+| `core/src/crypto/session.rs` | MLS groups, encrypt, decrypt, ratchet config |
+| `core/src/crypto/safety_number.rs` | 60-digit out-of-band verification |
+| `core/src/crypto/provider.rs` | MLS provider with reachable, snapshottable storage |
+| `core/src/storage.rs` | SQLCipher. Holds plaintext and keys. |
+| `core/src/transport.rs` | Relay client, pinning policy |
+| `core/src/manifest.rs` | The per-message record of what actually ran |
+| `server/src/store.rs` | The relay's four columns |
+| `server/src/http.rs` | Three endpoints, no logging middleware |
+| `clients/cli/src/main.rs` | Headless client, eleven commands |
+
+## Hard-won lessons from Phase 1
+
+Each of these cost real debugging time. They are in `docs/DECISIONS.md` in full.
+
+- **A security control that fails silently is worse than one that is absent**
+  (D-024). Two `rusqlite` entries in the workspace unified into a plain SQLite
+  build; `PRAGMA key` was silently ignored and every local database was
+  plaintext while the app reported an encrypted store. There is now a runtime
+  `PRAGMA cipher_version` check. Anywhere the project depends on a library
+  actually doing something, check that it did — do not assume an error would
+  have surfaced.
+- **Persisting state and rehydrating it are different jobs** (D-027).
+  Conversations vanished on restart while their keys sat intact on disk.
+- **Two individually correct decisions can produce a defect between them**
+  (D-028). The relay returns blobs in random order for privacy; MLS tolerates 5
+  out of order by default; a twelve-message run lost half of itself.
+- **Unit tests could not have caught any of the three above.** They needed the
+  real relay, a real restart, and a real batch. When adding a feature, ask what
+  only an end-to-end run would reveal.
+- **Bucketing a timestamp requires bucketing the input, not the output**
+  (D-020).
+- **`starts_with` is not a host check.** `http://127.0.0.1.evil.com` is someone
+  else's domain.
+
+## Two constraints that shape design decisions
+
+- **The relay must never learn who talks to whom.** This is why the sender's
+  inbox address travels inside the encrypted channel rather than beside the
+  Welcome (D-026), and why the relay has no sender column. Any feature that
+  would give the relay a correlation it lacks is a stop-and-ask (SPEC §2.6).
+- **The UI must never claim something the build does not do.** The manifest
+  reports five of nine stages today and names the other four as
+  `not yet implemented`. `RelayVisibility` lists the IP exposure and the
+  missing sealed sender under what the relay *can* see. Keep it that way as
+  features land — update the honest text in the same commit as the feature.

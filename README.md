@@ -67,7 +67,7 @@ Built in phases. Only what is listed as done actually works.
 | Phase | Scope | State |
 |---|---|---|
 | 0 | Repo, docs, design tokens, CI | **done** |
-| 1 | One-to-one encrypted text, relay, desktop client | in progress |
+| 1 | One-to-one encrypted text, relay, CLI client | **working** — desktop screens still to come |
 | 2 | Retention, wipe, passphrase, backup, identity-change warning | not started |
 | 3 | Attachments, metadata stripping, sealed sender | not started |
 | 4 | Tor transport | not started |

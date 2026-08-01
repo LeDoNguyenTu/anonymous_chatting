@@ -13,9 +13,10 @@ Do not begin a phase before the previous phase meets its exit criteria.
 | | |
 |---|---|
 | **Phase complete** | 0 — Foundation |
-| **Phase in progress** | 1 — Working 1:1 encrypted chat |
+| **Phase in progress** | 1 — Working 1:1 encrypted chat. **Core, relay and CLI done and working end to end. Desktop screens are what remain.** |
 | **Branch** | `claude/private-messaging-app-xjc6n1` |
 | **Blocked on** | nothing |
+| **Tests** | 76 passing |
 
 ---
 
@@ -101,18 +102,142 @@ Stop and write it up when it lands, even if work continues.**
 
 ### Order of work
 
-1. Relay first — it is the smallest component and the server-blindness test
-   (§8.3) must be written **before** the feature it verifies.
-2. `core` identity and MLS group creation.
-3. `core` storage on SQLCipher.
-4. `core` transport with SPKI pinning and an offline queue.
-5. `core/api.rs` — the only surface clients touch.
-6. CLI client, which makes the full path testable end to end.
-7. Desktop screens, in the SPEC §6.6 order.
+1. ~~Relay, with the server-blindness test written first~~ — **done**
+2. ~~`core` identity and MLS group creation~~ — **done**
+3. ~~`core` storage on SQLCipher~~ — **done**
+4. ~~`core` transport with pinning~~ — **done** (offline queue still to do)
+5. ~~`core/api.rs`~~ — **done**
+6. ~~CLI client~~ — **done**
+7. **Desktop screens, in SPEC §6.6 order** — next, and the bulk of what is left
 
-### Open questions for the project owner
+### What works right now
 
-None outstanding.
+Verified by running it, not only by unit tests:
+
+```sh
+cargo build --workspace
+
+# terminal 1
+POUCH_RELAY_DB=/tmp/relay.db POUCH_RELAY_BIND=127.0.0.1:8551 ./target/debug/pouch-relay
+
+# terminal 2 — two clients, two encrypted databases, one relay
+export R=http://127.0.0.1:8551
+K1=$(python3 -c "import os;print(os.urandom(32).hex())")
+K2=$(python3 -c "import os;print(os.urandom(32).hex())")
+B="POUCH_DB=/tmp/brian.db POUCH_KEY=$K1 POUCH_RELAY=$R"
+M="POUCH_DB=/tmp/mai.db   POUCH_KEY=$K2 POUCH_RELAY=$R"
+
+env $B pouch-cli create Brian
+env $M pouch-cli create Mai
+CODE=$(env $M pouch-cli invite | head -1)
+env $B pouch-cli add Mai "$CODE"          # prints the conversation id
+env $M pouch-cli receive                  # joins, learns Brian's name
+env $B pouch-cli send <conversation> "the meeting is at dawn"
+env $M pouch-cli receive
+env $M pouch-cli safety <contact>         # matches Brian's, digit for digit
+```
+
+The send prints a real manifest — five of nine stages, with compression,
+padding and sealed sender named as `not yet implemented` rather than hidden.
+
+### Phase 1 exit criteria
+
+| Criterion | State |
+|---|---|
+| Two clients exchange text reliably | **met** for two CLI clients against a live relay, automated in `core/tests/end_to_end.rs`. The literal "different machines" half is still a manual check — see below. |
+| Server blindness test (§8.3) passes | **met** — `server/tests/server_blindness.rs`, plus a second assertion against a real conversation in `end_to_end.rs` |
+| Manifest accuracy test (§8.6) passes | **met** — `core/src/manifest.rs` tests |
+| Manual DB dump reviewed and confirmed clean | **met** — relay database contains no message text, no display name, no fragment |
+| Desktop client screens | **not started** — this is what stands between here and the milestone |
+
+### What is left in Phase 1
+
+The desktop client, which is currently a Phase 0 token shell. In SPEC §6.6
+order:
+
+1. First run — create identity, offer but do not force a passphrase
+2. Conversation list
+3. Conversation view with the Custody Strip (component already exists and is
+   tested; it needs wiring to `Pouch`)
+4. Add contact — invite code as QR plus mono text
+5. Safety number — 60 digits, grouped in fives, plus QR
+6. Security details — `Pouch::security_details()` already returns everything
+   this screen needs
+7. The Manifest UI — collapsed line, expanded view, live stage progression,
+   and "what the relay could see" (`RelayVisibility` already returns the three
+   honest blocks)
+
+The Tauri bridge in `clients/desktop/src-tauri/src/main.rs` is a bare window
+with no commands. It needs `#[tauri::command]` wrappers over `Pouch`, and
+nothing lower level than `Pouch` (D-012).
+
+Also outstanding in Phase 1, smaller:
+
+- **Offline queue.** `send_message` returns an error with the right copy when
+  the relay is unreachable, but nothing retries. The manifest already reports
+  `failed at stage 07`.
+- **Real TLS.** `RelayConfig::pinned` exists and `RelayClient::new` refuses
+  unpinned remote relays, but the relay itself serves plain HTTP and the SPKI
+  pin is not yet checked against a presented certificate. Loopback development
+  works today; a remote deployment does not.
+- **Key from the OS keystore.** The CLI takes the database key from
+  `POUCH_KEY`, which is development-grade and says so in its own help text.
+
+---
+
+## Phase 1 session log — 2026-08-01
+
+### Landed
+
+- **Relay** (`server/`): four columns, three endpoints, no logs. Random
+  `message_id`, `WITHOUT ROWID` so SQLite's monotonic rowid cannot reintroduce
+  an ordering oracle, hourly-bucketed `expires_at`, collect and acknowledge as
+  separate requests.
+- **Core crypto** (`core/src/crypto/`): identity, invite codes, two-party MLS
+  groups, message encrypt and decrypt, 60-digit safety numbers.
+- **Core storage** (`core/src/storage.rs`): SQLCipher, key zeroized in place,
+  `VACUUM` on wipe.
+- **Core transport** (`core/src/transport.rs`): relay client, refuses unpinned
+  remote relays as a hard error.
+- **Manifest** (`core/src/manifest.rs`): reports only what actually ran.
+- **API** (`core/src/api.rs`): the single surface clients touch.
+- **CLI client** (`clients/cli/`): eleven commands, full send and receive.
+- **Tests**: 76, including a server-blindness suite and an end-to-end suite
+  that runs two clients against the real relay.
+
+### Five bugs worth remembering
+
+Three of these were invisible to unit tests and only appeared when the pieces
+were run together.
+
+1. **The dangerous one (D-024).** The relay had plain `rusqlite` and the core
+   had it aliased with `bundled-sqlcipher`. Cargo unifies features across a
+   workspace for one package version, so both collapsed into a plain SQLite
+   build. SQLite ignores pragmas it does not recognise, so `PRAGMA key`
+   returned success and encrypted nothing — every local database was plaintext
+   on disk while the application reported an encrypted store. Nothing in the
+   code was wrong; the dependency graph was. Now one SQLCipher build for the
+   workspace, plus a runtime `PRAGMA cipher_version` check that fails hard.
+2. **Conversations vanished on restart (D-027).** MLS state persisted fine but
+   was never rehydrated into an `MlsGroup`. Looked like data loss; was not.
+3. **Messages lost in a run (D-028).** The relay returns blobs in random-id
+   order on purpose, so batches always arrive shuffled, and MLS's default
+   out-of-order tolerance of 5 dropped over half of a twelve-message run. Two
+   individually correct decisions producing a defect between them.
+4. **Expiry was an arrival clock (D-020).** Bucketing `now + TTL` still varies
+   with `now`. The arrival instant has to be bucketed first, by flooring.
+5. **A lookalike loopback host.** `http://127.0.0.1.evil.com` is a registrable
+   domain someone else controls, and a `starts_with` check treated it as
+   loopback — disabling certificate pinning against an attacker's host.
+
+### Manual checks still owed for Phase 1 exit
+
+Run these on two real machines before calling the milestone done:
+
+- [ ] Two desktop clients on different machines exchange text
+- [ ] Safety numbers match on both physical devices
+- [ ] Copy a locked database file off a device and confirm it cannot be read
+- [ ] Keyboard-only navigation completes a full send
 
 ---
 

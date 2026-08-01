@@ -8,7 +8,7 @@ use super::{provider::PouchProvider, CryptoError, Identity, InviteCode, CIPHERSU
 use openmls::prelude::{
     tls_codec::{Deserialize as _, Serialize as _},
     GroupId, MlsGroup, MlsGroupCreateConfig, MlsGroupJoinConfig, MlsMessageBodyIn, MlsMessageIn,
-    ProcessedMessageContent, ProtocolMessage, StagedWelcome,
+    ProcessedMessageContent, ProtocolMessage, SenderRatchetConfiguration, StagedWelcome,
 };
 use openmls_traits::OpenMlsProvider;
 
@@ -19,6 +19,39 @@ use openmls_traits::OpenMlsProvider;
 /// is a separate mechanism — the manifest reports the bucket, not this value,
 /// and conflating them in the UI would misreport what ran.
 const MLS_PADDING_SIZE: usize = 128;
+
+/// How far out of order a message may arrive and still be decryptable.
+///
+/// This is not a tuning knob; it follows from a deliberate privacy decision
+/// elsewhere. The relay returns queued blobs ordered by their *random*
+/// identifier, because returning them in arrival order would hand an observer
+/// the sequence in which they were sent (D-010). A client therefore always
+/// receives a batch shuffled, and MLS's default tolerance of 5 silently drops
+/// anything further out of place than that — a run of a dozen messages loses
+/// half of itself.
+///
+/// **The trade, stated plainly.** A larger window means the receiver retains
+/// more unused message keys, and a key that still exists is a key that can be
+/// compromised. It weakens forward secrecy within one epoch, in exchange for
+/// not losing messages. 64 is chosen to comfortably cover a normal batch while
+/// keeping the retained set small; MLS discards the whole set on the next key
+/// rotation regardless.
+const OUT_OF_ORDER_TOLERANCE: u32 = 64;
+
+/// How far ahead of the expected generation a message may be.
+///
+/// Left at the library's default. This bounds the work an attacker can force by
+/// submitting a blob claiming a far-future generation.
+const MAXIMUM_FORWARD_DISTANCE: u32 = 2000;
+
+/// The ratchet window, applied identically to groups this client creates and
+/// groups it joins.
+///
+/// Both sides must agree, or one direction of a conversation drops messages the
+/// other keeps.
+fn sender_ratchet_configuration() -> SenderRatchetConfiguration {
+    SenderRatchetConfiguration::new(OUT_OF_ORDER_TOLERANCE, MAXIMUM_FORWARD_DISTANCE)
+}
 
 /// A message that arrived and was successfully authenticated.
 #[derive(Debug, Clone)]
@@ -59,6 +92,7 @@ impl Conversation {
 
         let config = MlsGroupCreateConfig::builder()
             .padding_size(MLS_PADDING_SIZE)
+            .sender_ratchet_configuration(sender_ratchet_configuration())
             .ciphersuite(CIPHERSUITE)
             // The ratchet tree travels with the group rather than being fetched
             // from the relay. The relay is assumed hostile, so it must not be
@@ -165,6 +199,7 @@ impl Conversation {
 
         let config = MlsGroupJoinConfig::builder()
             .padding_size(MLS_PADDING_SIZE)
+            .sender_ratchet_configuration(sender_ratchet_configuration())
             .build();
 
         let staged = StagedWelcome::new_from_welcome(provider, &config, welcome, None)

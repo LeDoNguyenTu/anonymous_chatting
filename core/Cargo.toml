@@ -37,6 +37,11 @@ uuid.workspace = true
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tempfile.workspace = true
+# The relay, so the end-to-end path is exercised against the real server rather
+# than a mock that cannot disagree with it. No cycle: the relay does not depend
+# on the core.
+pouch-relay = { path = "../server" }
+axum.workspace = true
 
 [lints.rust]
 unsafe_code = "forbid"

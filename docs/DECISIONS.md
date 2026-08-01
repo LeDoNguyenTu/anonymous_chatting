@@ -658,3 +658,44 @@ state and *rehydrating* it are separate pieces of work, and having done the
 first one well is what makes it easy to forget the second. The end-to-end run
 caught it; no unit test would have, because every unit test held its
 conversation in memory for the length of the test.
+
+---
+
+## D-028 — The MLS out-of-order window follows from the relay's random ordering
+**Date:** 2026-08-01 · **Status:** accepted · **Found by the end-to-end test**
+
+**What happened.** A run of twelve messages sent in sequence arrived as five.
+Not lost in transit — the relay had all twelve — but silently dropped by the
+receiving client.
+
+**Why.** The relay returns queued blobs ordered by their *random* identifier,
+deliberately, because returning them in arrival order would hand anyone reading
+a response the sequence in which they were sent (D-010). So a client always
+receives a batch shuffled. MLS's sender ratchet tolerates a bounded amount of
+out-of-order delivery and discards anything beyond it; the library default is 5.
+A shuffled batch of twelve routinely exceeds that.
+
+Two decisions that were individually correct combined into a defect. Neither the
+relay's ordering nor the library's default was wrong on its own.
+
+**Decision.** `out_of_order_tolerance` is set to 64, applied identically to
+groups this client creates and groups it joins — if the two sides disagree, one
+direction of a conversation drops messages the other keeps.
+`maximum_forward_distance` stays at the library default of 2000, which bounds
+the work an attacker can force by claiming a far-future generation.
+
+**The trade, stated plainly.** A larger window means the receiver retains more
+unused message keys, and a key that still exists is a key that can be
+compromised. This weakens forward secrecy *within a single epoch* in exchange
+for not losing messages. MLS discards the whole retained set at the next key
+rotation, so the exposure is bounded in time as well as in count.
+
+**The alternative that was rejected.** Having the relay return blobs in arrival
+order would remove the need for any window at all. It would also make the
+response an arrival clock, which is precisely what D-010 and D-020 exist to
+prevent. Losing forward secrecy for at most 64 message keys inside one epoch is
+a smaller cost than handing every observer the send order of every conversation.
+
+**Why it was only found by an end-to-end test.** Every unit test sent messages
+in order, because in a unit test there is no relay to shuffle them. The failure
+needed the real server's real ordering to appear.
