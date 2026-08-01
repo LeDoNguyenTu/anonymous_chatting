@@ -11,7 +11,9 @@
 //! requires to say what happened and what to do — so the UI can show them
 //! directly rather than inventing its own wording.
 
-use pouch_core::{ConversationSummary, IdentityState, Message, Pouch, SecurityDetails};
+use pouch_core::{
+    ConversationSummary, IdentityState, Message, Pouch, RetentionPolicy, SecurityDetails,
+};
 use serde::Serialize;
 use tauri::{Manager, State};
 
@@ -352,6 +354,194 @@ pub async fn relay_visibility(
 #[tauri::command]
 pub async fn wipe_all(state: State<'_, AppState>) -> Result<(), String> {
     state.with(|p| p.wipe_all().map_err(|e| e.to_string())).await
+}
+
+/* -- Phase 2: the storage controls (SPEC §6.7.7) --------------------------- */
+
+/// A contact's identity key having changed, flattened for the webview.
+#[derive(Serialize)]
+pub struct IdentityChangeView {
+    pub contact_id: String,
+    pub contact_name: String,
+    pub changed_at: u64,
+}
+
+/// How long this device keeps messages: `forever` / `30d` / `7d` / `24h`.
+#[tauri::command]
+pub async fn retention_policy(state: State<'_, AppState>) -> Result<String, String> {
+    state
+        .with(|p| {
+            p.retention_policy()
+                .map(|r| retention_word(r).to_string())
+                .map_err(|e| e.to_string())
+        })
+        .await
+}
+
+/// Changes how long messages are kept, and returns how many were deleted.
+///
+/// The count is returned rather than discarded so the screen can say what
+/// actually happened. "Messages are kept 7 days" alone leaves the user guessing
+/// whether anything went.
+#[tauri::command]
+pub async fn set_retention_policy(
+    state: State<'_, AppState>,
+    policy: String,
+) -> Result<usize, String> {
+    let parsed = parse_retention(&policy)?;
+    state
+        .with(|p| p.set_retention_policy(parsed).map_err(|e| e.to_string()))
+        .await
+}
+
+/// The disappearing-message interval for one conversation, in seconds.
+#[tauri::command]
+pub async fn disappearing_messages(
+    state: State<'_, AppState>,
+    conversation_id: String,
+) -> Result<Option<u64>, String> {
+    state
+        .with(|p| {
+            p.disappearing_messages(&conversation_id)
+                .map_err(|e| e.to_string())
+        })
+        .await
+}
+
+/// Sets, or clears, disappearing messages for one conversation.
+#[tauri::command]
+pub async fn set_disappearing_messages(
+    state: State<'_, AppState>,
+    conversation_id: String,
+    seconds: Option<u64>,
+) -> Result<usize, String> {
+    state
+        .with(|p| {
+            p.set_disappearing_messages(&conversation_id, seconds)
+                .map_err(|e| e.to_string())
+        })
+        .await
+}
+
+/// How many messages are waiting for the relay to come back.
+#[tauri::command]
+pub async fn queued_count(state: State<'_, AppState>) -> Result<usize, String> {
+    state
+        .with(|p| p.queued_count().map_err(|e| e.to_string()))
+        .await
+}
+
+/// Identity changes the user has not yet answered.
+#[tauri::command]
+pub async fn identity_changes(
+    state: State<'_, AppState>,
+) -> Result<Vec<IdentityChangeView>, String> {
+    state
+        .with(|p| {
+            p.identity_changes()
+                .map(|list| {
+                    list.into_iter()
+                        .map(|c| IdentityChangeView {
+                            contact_id: c.contact_id,
+                            contact_name: c.contact_name,
+                            changed_at: c.changed_at,
+                        })
+                        .collect()
+                })
+                .map_err(|e| e.to_string())
+        })
+        .await
+}
+
+/// Records that the user answered an identity change warning.
+///
+/// Not a verification, and the command is named so it cannot be mistaken for
+/// one at the call site.
+#[tauri::command]
+pub async fn acknowledge_identity_change(
+    state: State<'_, AppState>,
+    contact_id: String,
+) -> Result<(), String> {
+    state
+        .with(|p| {
+            p.acknowledge_identity_change(&contact_id)
+                .map_err(|e| e.to_string())
+        })
+        .await
+}
+
+/// Whether opening this device requires a passphrase.
+#[tauri::command]
+pub async fn is_passphrase_protected(state: State<'_, AppState>) -> Result<bool, String> {
+    state
+        .with(|p| p.is_passphrase_protected().map_err(|e| e.to_string()))
+        .await
+}
+
+/// Protects this device with a passphrase, re-encrypting the database.
+#[tauri::command]
+pub async fn set_passphrase(
+    state: State<'_, AppState>,
+    passphrase: String,
+) -> Result<(), String> {
+    if passphrase.trim().is_empty() {
+        return Err("An empty passphrase protects nothing.".to_string());
+    }
+    state
+        .with(|p| p.set_passphrase(&passphrase).map_err(|e| e.to_string()))
+        .await
+}
+
+/// Removes passphrase protection. A downgrade, and the screen says so.
+#[tauri::command]
+pub async fn clear_passphrase(state: State<'_, AppState>) -> Result<(), String> {
+    state
+        .with(|p| p.clear_passphrase().map_err(|e| e.to_string()))
+        .await
+}
+
+/// The retention choices, so the webview does not hardcode them.
+///
+/// Returned as `(value, label)` pairs: the value is what the command takes, the
+/// label is what the user reads.
+#[tauri::command]
+pub fn retention_choices() -> Vec<(String, String)> {
+    [
+        RetentionPolicy::Forever,
+        RetentionPolicy::Days30,
+        RetentionPolicy::Days7,
+        RetentionPolicy::Hours24,
+    ]
+    .iter()
+    .map(|p| (retention_word(*p).to_string(), p.label().to_string()))
+    .collect()
+}
+
+/// The wire word for a policy.
+fn retention_word(policy: RetentionPolicy) -> &'static str {
+    match policy {
+        RetentionPolicy::Forever => "forever",
+        RetentionPolicy::Days30 => "30d",
+        RetentionPolicy::Days7 => "7d",
+        RetentionPolicy::Hours24 => "24h",
+    }
+}
+
+/// Parses a wire word back to a policy.
+///
+/// An unrecognised value is rejected rather than defaulted. Defaulting here
+/// would mean a typo in the interface silently selected a policy the user did
+/// not choose — and in one direction that deletes their messages.
+fn parse_retention(word: &str) -> Result<RetentionPolicy, String> {
+    match word {
+        "forever" => Ok(RetentionPolicy::Forever),
+        "30d" => Ok(RetentionPolicy::Days30),
+        "7d" => Ok(RetentionPolicy::Days7),
+        "24h" => Ok(RetentionPolicy::Hours24),
+        other => Err(format!(
+            "'{other}' is not a retention setting this build understands."
+        )),
+    }
 }
 
 /// Identity states, so the webview does not hardcode the label strings.

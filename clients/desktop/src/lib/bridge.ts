@@ -70,6 +70,25 @@ export interface SecurityDetailsView {
   appVersion: string;
 }
 
+/**
+ * How long this device keeps messages.
+ *
+ * The wire values, not the labels. Kept as a union so a screen cannot invent a
+ * setting the core does not implement.
+ */
+export type RetentionValue = "forever" | "30d" | "7d" | "24h";
+
+export interface RetentionChoice {
+  value: RetentionValue;
+  label: string;
+}
+
+export interface IdentityChangeView {
+  contactId: string;
+  contactName: string;
+  changedAt: number;
+}
+
 export interface PouchBridge {
   hasIdentity(): Promise<boolean>;
   createIdentity(displayName: string): Promise<string>;
@@ -87,6 +106,24 @@ export interface PouchBridge {
   securityDetails(): Promise<SecurityDetailsView>;
   relayVisibility(blobSize: number): Promise<RelayVisibilityView>;
   wipeAll(): Promise<void>;
+
+  /* Storage controls (SPEC §6.7.7). Each mutating call returns how many
+   * messages it deleted, so the screen can report the consequence rather than
+   * leaving the user to guess. */
+  retentionPolicy(): Promise<RetentionValue>;
+  setRetentionPolicy(policy: RetentionValue): Promise<number>;
+  retentionChoices(): Promise<RetentionChoice[]>;
+  disappearingMessages(conversationId: string): Promise<number | null>;
+  setDisappearingMessages(
+    conversationId: string,
+    seconds: number | null,
+  ): Promise<number>;
+  queuedCount(): Promise<number>;
+  identityChanges(): Promise<IdentityChangeView[]>;
+  acknowledgeIdentityChange(contactId: string): Promise<void>;
+  isPassphraseProtected(): Promise<boolean>;
+  setPassphrase(passphrase: string): Promise<void>;
+  clearPassphrase(): Promise<void>;
 }
 
 /* -- wire shapes -----------------------------------------------------------
@@ -115,6 +152,12 @@ interface WireRelayVisibility {
   visible: string[];
   not_visible: string[];
   still_inferable: string[];
+}
+
+interface WireIdentityChange {
+  contact_id: string;
+  contact_name: string;
+  changed_at: number;
 }
 
 interface WireSecurityDetails {
@@ -153,6 +196,21 @@ export function asIdentityLabel(value: string): IdentityLabel {
  */
 export function asTransportLabel(value: string): TransportLabel {
   return value === "TOR" || value === "DIRECT" ? value : "OFFLINE";
+}
+
+/**
+ * Narrows a string from the core to a retention setting.
+ *
+ * Same rule as the two above, applied to the setting whose failure mode is
+ * deletion: anything unrecognised becomes `forever`. If the interface cannot
+ * tell what the device is set to, it must not act as though messages are being
+ * deleted on a schedule it invented, and it must never round *towards* a
+ * shorter retention than the user chose.
+ */
+export function asRetentionValue(value: string): RetentionValue {
+  return value === "30d" || value === "7d" || value === "24h"
+    ? value
+    : "forever";
 }
 
 /** The real bridge, talking to the Rust side over Tauri IPC. */
@@ -239,5 +297,50 @@ export function tauriBridge(
     },
 
     wipeAll: () => invoke<void>("wipe_all"),
+
+    retentionPolicy: async () =>
+      asRetentionValue(await invoke<string>("retention_policy")),
+
+    setRetentionPolicy: (policy) =>
+      invoke<number>("set_retention_policy", { policy }),
+
+    retentionChoices: async () => {
+      const rows = await invoke<[string, string][]>("retention_choices");
+      return rows.map(([value, label]) => ({
+        value: asRetentionValue(value),
+        label,
+      }));
+    },
+
+    disappearingMessages: async (conversationId) => {
+      const seconds = await invoke<number | null>("disappearing_messages", {
+        conversationId,
+      });
+      return seconds ?? null;
+    },
+
+    setDisappearingMessages: (conversationId, seconds) =>
+      invoke<number>("set_disappearing_messages", { conversationId, seconds }),
+
+    queuedCount: () => invoke<number>("queued_count"),
+
+    identityChanges: async () => {
+      const rows = await invoke<WireIdentityChange[]>("identity_changes");
+      return rows.map((r) => ({
+        contactId: r.contact_id,
+        contactName: r.contact_name,
+        changedAt: r.changed_at,
+      }));
+    },
+
+    acknowledgeIdentityChange: (contactId) =>
+      invoke<void>("acknowledge_identity_change", { contactId }),
+
+    isPassphraseProtected: () => invoke<boolean>("is_passphrase_protected"),
+
+    setPassphrase: (passphrase) =>
+      invoke<void>("set_passphrase", { passphrase }),
+
+    clearPassphrase: () => invoke<void>("clear_passphrase"),
   };
 }

@@ -17,6 +17,7 @@ interface ConversationListProps {
   onOpen: (id: string) => void;
   onAddContact: () => void;
   onSecurityDetails: () => void;
+  onPrivacyStorage: () => void;
 }
 
 export function ConversationList({
@@ -24,6 +25,7 @@ export function ConversationList({
   onOpen,
   onAddContact,
   onSecurityDetails,
+  onPrivacyStorage,
 }: ConversationListProps) {
   return (
     <main className="screen">
@@ -32,6 +34,9 @@ export function ConversationList({
         <div className="screen__actions">
           <button type="button" className="button-quiet" onClick={onAddContact}>
             Add someone
+          </button>
+          <button type="button" className="button-quiet" onClick={onPrivacyStorage}>
+            Privacy and storage
           </button>
           <button type="button" className="button-quiet" onClick={onSecurityDetails}>
             Security details

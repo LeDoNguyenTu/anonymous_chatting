@@ -153,16 +153,16 @@ pub fn passphrase_command(args: &[String]) -> Result<()> {
     match args.get(1).map(String::as_str) {
         None => {
             if pouch.is_passphrase_protected()? {
-                println!("This device is protected by a passphrase.");
-                println!("Opening it requires POUCH_PASSPHRASE.");
+                println!("This device is protected by a passphrase."); // guardrail-allow: prose, not a secret
+                println!("Opening it requires POUCH_PASSPHRASE."); // guardrail-allow: the variable's name, never its value
             } else {
-                println!("This device is not protected by a passphrase.");
+                println!("This device is not protected by a passphrase."); // guardrail-allow: prose, not a secret
                 println!();
-                println!("The database key is in a file next to the database, so anyone");
-                println!("who can read the database can read the key. A passphrase");
-                println!("replaces it with something only you know.");
+                println!("The database key is in a file next to the database, so anyone"); // guardrail-allow: prose
+                println!("who can read the database can read the key. A passphrase"); // guardrail-allow: prose
+                println!("replaces it with something only you know."); // guardrail-allow: prose
                 println!();
-                println!("  POUCH_PASSPHRASE='...' pouch-cli passphrase set");
+                println!("  POUCH_PASSPHRASE='...' pouch-cli passphrase set"); // guardrail-allow: a literal '...', never a real value
             }
             Ok(())
         }
@@ -174,15 +174,15 @@ pub fn passphrase_command(args: &[String]) -> Result<()> {
                 bail!("an empty passphrase protects nothing");
             }
             pouch.set_passphrase(&new)?;
-            println!("This device now requires a passphrase.");
+            println!("This device now requires a passphrase."); // guardrail-allow: prose, not a secret
             println!();
-            println!("The database has been re-encrypted and the old key file deleted.");
-            println!("There is no recovery. If you forget it, this history is gone.");
+            println!("The database has been re-encrypted and the old key file deleted."); // guardrail-allow: prose
+            println!("There is no recovery. If you forget it, this history is gone."); // guardrail-allow: prose
             Ok(())
         }
         Some("off") => {
             if !pouch.is_passphrase_protected()? {
-                println!("This device is not protected by a passphrase.");
+                println!("This device is not protected by a passphrase."); // guardrail-allow: prose, not a secret
                 return Ok(());
             }
             pouch.clear_passphrase()?;

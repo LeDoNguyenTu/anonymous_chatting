@@ -23,6 +23,48 @@
 .screen__footnote { color: var(--fg-mute); font-size: var(--text-12); border-top: 1px solid var(--border); padding-top: var(--space-4); }
 .screen__error { color: var(--fg-alarm); font-size: var(--text-14); }
 
+/* The result of a control the user just used — "3 messages have been deleted".
+   Muted rather than alarming: it reports, it does not warn. */
+.screen__note { color: var(--fg-mute); font-size: var(--text-14); }
+
+/* A set of mutually exclusive choices, as radios. Radios rather than a select
+   because every option and its consequence stays visible, and because a select
+   hides the current setting behind a click. */
+.field-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.choice {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  /* 44px, the touch-target floor in SPEC §6.10. Applied here rather than only
+     on Android, because a pointer is not the only input on a desktop. */
+  min-height: 44px;
+  font-size: var(--text-14);
+}
+
+/* Destructive actions look destructive. Paired with the typed confirmation, so
+   colour is never the only thing standing between the user and a wipe. */
+.button-alarm {
+  padding: var(--space-2) var(--space-3);
+  background: transparent;
+  color: var(--fg-alarm);
+  border: 1px solid var(--fg-alarm);
+  border-radius: var(--radius-md);
+  font-size: var(--text-14);
+}
+
+.button-alarm:disabled {
+  color: var(--fg-mute);
+  border-color: var(--border-strong);
+}
+
 .screen__actions { display: flex; gap: var(--space-2); flex-wrap: wrap; }
 .screen__actions--stacked { flex-direction: column; align-items: stretch; }
 

@@ -8,13 +8,20 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { IdentityChangeModal } from "./components/IdentityChangeModal";
 import { AddContact } from "./screens/AddContact";
 import { Conversation } from "./screens/Conversation";
 import { ConversationList } from "./screens/ConversationList";
 import { FirstRun } from "./screens/FirstRun";
+import { PrivacyStorage } from "./screens/PrivacyStorage";
 import { SafetyNumber } from "./screens/SafetyNumber";
 import { SecurityDetails } from "./screens/SecurityDetails";
-import { tauriBridge, type ConversationView, type PouchBridge } from "./lib/bridge";
+import {
+  tauriBridge,
+  type ConversationView,
+  type IdentityChangeView,
+  type PouchBridge,
+} from "./lib/bridge";
 import "./App.css";
 
 type Route =
@@ -24,6 +31,7 @@ type Route =
   | { name: "conversation"; id: string }
   | { name: "safety"; contactId: string; contactName: string }
   | { name: "add-contact" }
+  | { name: "privacy" }
   | { name: "security" };
 
 export default function App({ bridge: injected }: { bridge?: PouchBridge } = {}) {
@@ -31,10 +39,14 @@ export default function App({ bridge: injected }: { bridge?: PouchBridge } = {})
 
   const [route, setRoute] = useState<Route>({ name: "loading" });
   const [conversations, setConversations] = useState<ConversationView[]>([]);
+  const [changes, setChanges] = useState<IdentityChangeView[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   const loadConversations = useCallback(async () => {
     setConversations(await bridge.conversations());
+    // Reloaded alongside the list rather than polled. Every path that returns
+    // to the list has just been somewhere that could have produced one.
+    setChanges(await bridge.identityChanges());
   }, [bridge]);
 
   const openList = useCallback(async () => {
@@ -45,6 +57,33 @@ export default function App({ bridge: injected }: { bridge?: PouchBridge } = {})
       setError(e instanceof Error ? e.message : String(e));
     }
   }, [loadConversations]);
+
+  /* An unanswered identity change interrupts whatever is on screen. It is the
+   * one thing in this interface allowed to do that, because it is the one thing
+   * where continuing unaware is the harmful outcome. */
+  const pendingChange = changes[0] ?? null;
+
+  const answerChange = useCallback(
+    async (contactId: string, thenVerify: boolean) => {
+      try {
+        await bridge.acknowledgeIdentityChange(contactId);
+        const remaining = await bridge.identityChanges();
+        setChanges(remaining);
+
+        if (thenVerify) {
+          const contact = conversations.find((c) => c.contactId === contactId);
+          setRoute({
+            name: "safety",
+            contactId,
+            contactName: contact?.contactName ?? "",
+          });
+        }
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [bridge, conversations],
+  );
 
   useEffect(() => {
     (async () => {
@@ -86,6 +125,7 @@ export default function App({ bridge: injected }: { bridge?: PouchBridge } = {})
           onOpen={(id) => setRoute({ name: "conversation", id })}
           onAddContact={() => setRoute({ name: "add-contact" })}
           onSecurityDetails={() => setRoute({ name: "security" })}
+          onPrivacyStorage={() => setRoute({ name: "privacy" })}
         />
       )}
 
@@ -121,8 +161,24 @@ export default function App({ bridge: injected }: { bridge?: PouchBridge } = {})
         />
       )}
 
+      {route.name === "privacy" && (
+        <PrivacyStorage
+          bridge={bridge}
+          onBack={openList}
+          onWiped={() => setRoute({ name: "first-run" })}
+        />
+      )}
+
       {route.name === "security" && (
         <SecurityDetails bridge={bridge} onBack={openList} />
+      )}
+
+      {pendingChange && (
+        <IdentityChangeModal
+          change={pendingChange}
+          onVerify={(id) => void answerChange(id, true)}
+          onContinue={(id) => void answerChange(id, false)}
+        />
       )}
     </div>
   );

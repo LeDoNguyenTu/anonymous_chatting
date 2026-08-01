@@ -34,6 +34,17 @@ fn main() {
             commands::relay_visibility,
             commands::wipe_all,
             commands::identity_labels,
+            commands::retention_policy,
+            commands::set_retention_policy,
+            commands::retention_choices,
+            commands::disappearing_messages,
+            commands::set_disappearing_messages,
+            commands::queued_count,
+            commands::identity_changes,
+            commands::acknowledge_identity_change,
+            commands::is_passphrase_protected,
+            commands::set_passphrase,
+            commands::clear_passphrase,
         ])
         .run(tauri::generate_context!())
         .expect("failed to start the Pouch window");
