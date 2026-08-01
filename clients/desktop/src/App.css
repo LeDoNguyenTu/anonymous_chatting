@@ -1,0 +1,110 @@
+.shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+  background: var(--bg-base);
+}
+
+.shell__body {
+  flex: 1;
+  width: 100%;
+  max-width: 46rem;
+  margin: 0 auto;
+  padding: var(--space-6) var(--space-4) var(--space-7);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.shell__title { font-size: var(--text-28); }
+
+.shell__sub,
+.panel__note {
+  color: var(--fg-mute);
+  font-size: var(--text-14);
+  margin-top: var(--space-2);
+}
+
+.panel {
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-5);
+}
+
+.panel__h { font-size: var(--text-20); }
+
+.control-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
+}
+
+.control-row__label {
+  font-size: var(--text-14);
+  color: var(--fg-mute);
+  min-width: 5.5rem;
+}
+
+.chip {
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-14);
+  background: var(--bg-sunken);
+  color: var(--fg-body);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  transition:
+    background var(--motion-quick) var(--ease-out),
+    border-color var(--motion-quick) var(--ease-out);
+}
+
+/* Selection is carried by border and weight as well as fill, so the state is
+   not conveyed through colour alone. */
+.chip[aria-pressed="true"] {
+  background: var(--bubble-sent);
+  border-color: var(--accent);
+  color: var(--fg-verified);
+  font-weight: var(--weight-medium);
+}
+
+.button-primary {
+  padding: var(--space-2) var(--space-5);
+  background: var(--accent);
+  color: var(--fg-on-accent);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  font-weight: var(--weight-medium);
+  transition: background var(--motion-quick) var(--ease-out);
+}
+
+.button-primary:active { background: var(--accent-pressed); }
+
+.specimen-sans {
+  margin-top: var(--space-4);
+  font-size: var(--text-16);
+  line-height: var(--leading-body);
+}
+
+.specimen-mono {
+  margin-top: var(--space-4);
+  font-family: var(--font-mono);
+  font-size: var(--text-20);
+  letter-spacing: var(--tracking-security);
+  color: var(--fg-body);
+  word-spacing: 0.35em;
+}
+
+.shell__footer {
+  color: var(--fg-mute);
+  font-size: var(--text-12);
+  border-top: 1px solid var(--border);
+  padding-top: var(--space-4);
+}
+
+@media (max-width: 460px) {
+  .shell__body { padding: var(--space-4) var(--space-3) var(--space-6); }
+  .panel { padding: var(--space-4); }
+  .control-row__label { min-width: 100%; }
+}

@@ -1,0 +1,18 @@
+[package]
+name = "pouch-cli"
+description = "Headless client. Drives the core from a terminal for testing and demos."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+pouch-core = { path = "../../core" }
+tokio = { workspace = true, features = ["full"] }
+anyhow.workspace = true
+serde_json.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"

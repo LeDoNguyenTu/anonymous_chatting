@@ -1,0 +1,23 @@
+[package]
+name = "pouch-desktop"
+description = "Pouch desktop shell. Hosts the webview and bridges it to pouch-core."
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+license = "AGPL-3.0-or-later"
+authors = ["Le Do Nguyen Tu"]
+
+# Not a workspace member: it needs GTK and WebKitGTK at build time, which the
+# headless CI job does not install. Built by the dedicated desktop CI job.
+
+[build-dependencies]
+tauri-build = { version = "=2.0.4", features = [] }
+
+[dependencies]
+pouch-core = { path = "../../../core" }
+tauri = { version = "=2.1.1", features = [] }
+serde = { version = "=1.0.216", features = ["derive"] }
+serde_json = "=1.0.134"
+
+[lints.rust]
+unsafe_code = "forbid"

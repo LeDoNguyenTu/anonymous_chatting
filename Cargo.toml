@@ -1,0 +1,58 @@
+[workspace]
+resolver = "2"
+members = ["core", "server", "clients/cli"]
+# The Tauri shell needs GTK and WebKitGTK at build time. Excluding it keeps
+# `cargo build --workspace` usable on a headless machine; it has its own CI job.
+exclude = ["clients/desktop/src-tauri"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+license = "AGPL-3.0-or-later"
+authors = ["Le Do Nguyen Tu"]
+repository = "https://github.com/LeDoNguyenTu/anonymous_chatting"
+
+# Exact versions are pinned deliberately (SPEC 2.1). `openmls` changes its API
+# between minor versions; an unpinned bump is a silent break in key handling.
+# Any change to a version here requires an entry in docs/DECISIONS.md.
+[workspace.dependencies]
+# --- MLS (RFC 9420) -------------------------------------------------------
+openmls = "=0.8.1"
+openmls_rust_crypto = "=0.5.0"
+openmls_traits = "=0.5.0"
+openmls_basic_credential = "=0.5.0"
+openmls_memory_storage = "=0.5.0"
+
+# --- primitives (library only, never reimplemented) -----------------------
+argon2 = "=0.5.3"
+rand = "=0.8.5"
+sha2 = "=0.10.9"
+subtle = "=2.6.1"
+zeroize = { version = "=1.8.1", features = ["zeroize_derive"] }
+
+# --- storage --------------------------------------------------------------
+rusqlite = "=0.32.1"
+
+# --- transport / server ---------------------------------------------------
+axum = "=0.7.9"
+reqwest = { version = "=0.12.9", default-features = false, features = ["json", "rustls-tls-manual-roots"] }
+rustls = "=0.23.20"
+tokio = "=1.42.0"
+tower-http = "=0.6.2"
+
+# --- payload --------------------------------------------------------------
+zstd = "=0.13.2"
+
+# --- plumbing -------------------------------------------------------------
+anyhow = "=1.0.95"
+base64 = "=0.22.1"
+hex = "=0.4.3"
+serde = { version = "=1.0.216", features = ["derive"] }
+serde_json = "=1.0.134"
+thiserror = "=2.0.9"
+uuid = { version = "=1.11.0", features = ["v4", "serde"] }
+
+[profile.release]
+# Secrets must not survive in unwind landing pads we cannot reason about.
+panic = "abort"

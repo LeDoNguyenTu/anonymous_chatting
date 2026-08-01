@@ -1,0 +1,175 @@
+/*
+ * Pouch design tokens — docs/DESIGN_SYSTEM.md
+ *
+ * Two layers:
+ *   1. Brand tokens. The identity of a colour. Fixed across themes.
+ *   2. Semantic tokens. What a colour *means* here, resolved per theme.
+ *
+ * Components use semantic tokens only. A component that reaches for a brand
+ * token directly will read correctly in one theme and fail contrast in the
+ * other — that is exactly the amber-on-light failure documented in
+ * DESIGN_SYSTEM.md §2.2.
+ *
+ * Every --fg-* value below is measured, not estimated. Ratios are in the
+ * comments and re-verified by scripts/check-contrast.mjs on every CI run.
+ */
+
+:root {
+  /* ---- brand tokens (theme-independent) ------------------------------- */
+  --ink: #131a24;
+  --slate: #1f2a36;
+  --paper: #e8e9e4;
+  --paper-fold: #d6d8d1;
+  --verdigris: #4e8c7d;
+  --verdigris-deep: #2f5f53;
+  --amber: #c4913e;
+  --seal: #a8443a;
+  --mute: #6b7684;
+
+  /* ---- typography ------------------------------------------------------ */
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", monospace;
+
+  --text-12: 0.75rem;
+  --text-14: 0.875rem;
+  --text-16: 1rem;
+  --text-20: 1.25rem;
+  --text-28: 1.75rem;
+  --text-40: 2.5rem;
+
+  --leading-body: 1.55;
+  --leading-tight: 1.25;
+
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+
+  /* Safety numbers and fingerprints. Grouped in fives, generously spaced,
+     because the user is comparing them character by character against another
+     screen and every aid to that comparison is a real usability gain. */
+  --tracking-security: 0.12em;
+
+  /* ---- space ----------------------------------------------------------- */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --space-6: 2rem;
+  --space-7: 3rem;
+
+  --radius-sm: 3px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+
+  /* ---- motion ---------------------------------------------------------- */
+  --motion-quick: 120ms;
+  --motion-seal: 180ms;
+  --ease-out: cubic-bezier(0.22, 0.61, 0.36, 1);
+
+  /* Minimum touch target, DESIGN_SYSTEM.md §8. */
+  --target-min: 44px;
+}
+
+/* ---- light theme (default) --------------------------------------------- */
+:root,
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --bg-base: var(--paper);
+  --bg-raised: #ffffff;
+  --bg-sunken: var(--paper-fold);
+  --border: var(--paper-fold);
+  --border-strong: #b9bcb4;
+
+  --fg-body: var(--ink);
+  --fg-mute: #5b6470; /* 4.91:1 on paper · 6.00:1 on white */
+  --fg-verified: #3b6a5f; /* 5.04:1 on paper · 6.15:1 on white */
+  --fg-pending: #7f5d27; /* 4.92:1 on paper · 6.00:1 on white */
+  --fg-alarm: #9c3f35; /* 5.42:1 on paper · 6.61:1 on white */
+
+  --fg-on-accent: #ffffff;
+  --accent: var(--verdigris);
+  --accent-pressed: var(--verdigris-deep);
+
+  /* Sent bubbles: verdigris at low opacity per SPEC §6.7.3. Body text on top
+     resolves to --fg-body, which is why the tint stays this light. */
+  --bubble-sent: rgba(78, 140, 125, 0.16);
+  --bubble-received: #ffffff;
+
+  --focus-ring: var(--verdigris-deep);
+}
+
+/* ---- dark theme --------------------------------------------------------- */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --bg-base: var(--ink);
+  --bg-raised: var(--slate);
+  --bg-sunken: #0d131b;
+  --border: #2c3947;
+  --border-strong: #3d4c5c;
+
+  --fg-body: var(--paper);
+  --fg-mute: #8b96a2; /* 5.81:1 on ink · 4.84:1 on slate */
+  --fg-verified: #5ca492; /* 5.98:1 on ink · 4.98:1 on slate */
+  --fg-pending: #c99a4b; /* 6.83:1 on ink · 5.69:1 on slate */
+  --fg-alarm: #d4837a; /* 6.10:1 on ink · 5.08:1 on slate */
+
+  --fg-on-accent: var(--ink);
+  --accent: #5ca492;
+  --accent-pressed: var(--verdigris);
+
+  --bubble-sent: rgba(92, 164, 146, 0.18);
+  --bubble-received: var(--slate);
+
+  --focus-ring: #7cbdab;
+}
+
+/* Follow the OS when the user has expressed no preference in-app. The
+   [data-theme] attribute always wins, in both directions. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+
+    --bg-base: var(--ink);
+    --bg-raised: var(--slate);
+    --bg-sunken: #0d131b;
+    --border: #2c3947;
+    --border-strong: #3d4c5c;
+
+    --fg-body: var(--paper);
+    --fg-mute: #8b96a2;
+    --fg-verified: #5ca492;
+    --fg-pending: #c99a4b;
+    --fg-alarm: #d4837a;
+
+    --fg-on-accent: var(--ink);
+    --accent: #5ca492;
+    --accent-pressed: var(--verdigris);
+
+    --bubble-sent: rgba(92, 164, 146, 0.18);
+    --bubble-received: var(--slate);
+
+    --focus-ring: #7cbdab;
+  }
+}
+
+/* prefers-reduced-motion is not optional — DESIGN_SYSTEM.md §6.
+   Collapsing the durations to ~0 disables the seal-press and the manifest
+   stage progression without needing every component to branch on it. */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion-quick: 0.01ms;
+    --motion-seal: 0.01ms;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
