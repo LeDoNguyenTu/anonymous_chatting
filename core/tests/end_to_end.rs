@@ -54,6 +54,56 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
 }
 
 #[tokio::test]
+async fn a_highly_compressible_message_round_trips_and_the_manifest_says_so() {
+    // Compression (manifest stage 3, D-009) is applied inside send_message and
+    // reversed inside receive_messages — two different functions, two
+    // different processes here even though they share one binary, talking
+    // through a real relay that only ever sees the final MLS ciphertext. A
+    // unit test on the compression module proves zstd round-trips; it cannot
+    // prove the two call sites agree on when compression happened, which is
+    // the thing an integration bug would actually break.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let (addr, _) = spawn_relay(dir.path()).await;
+    let relay = || RelayConfig::insecure_local(format!("http://{addr}"));
+
+    let brian_db = dir.path().join("brian.db").to_string_lossy().into_owned();
+    let mai_db = dir.path().join("mai.db").to_string_lossy().into_owned();
+
+    let mut brian = Pouch::create("Brian", &brian_db, &mut key(0x11), relay()).expect("brian");
+    let mut mai = Pouch::create("Mai", &mai_db, &mut key(0x22), relay()).expect("mai");
+    let code = mai.invite_code().expect("code");
+    let conversation = brian.add_contact("Mai", &code).await.expect("adds");
+    mai.receive_messages().await.expect("mai joins");
+
+    // 500 repeats of one word compresses hard, which is what makes it a good
+    // proof that real compression ran rather than a no-op pass-through.
+    let body = "meeting ".repeat(500);
+    let manifest = brian
+        .send_message(&conversation, &body)
+        .await
+        .expect("sends");
+
+    let compress_row = manifest
+        .stages()
+        .iter()
+        .find(|(s, _)| s.number() == 3)
+        .expect("stage 3 present");
+    assert!(compress_row.1.ran(), "stage 3 did not report as having run");
+    assert!(
+        compress_row.1.detail().contains("zstd"),
+        "the manifest does not name the algorithm: {}",
+        compress_row.1.detail()
+    );
+
+    let received = mai.receive_messages().await.expect("mai receives");
+    assert_eq!(received.messages.len(), 1);
+    assert_eq!(
+        received.messages[0].body, body,
+        "the message did not survive compress-then-decompress intact"
+    );
+}
+
+#[tokio::test]
 async fn a_passphrase_re_encrypts_the_database_and_the_old_key_stops_working() {
     // SPEC §7.2: a passphrase via Argon2id, for users who opt in. The claim
     // being tested is the one that matters — after turning it on, the key that

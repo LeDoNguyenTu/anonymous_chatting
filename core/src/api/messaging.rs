@@ -12,7 +12,14 @@ use crate::manifest::Manifest;
 use crate::storage::{Direction, QueuedMessage, StoredContact, StoredMessage};
 use crate::transport::Route;
 
+use super::compression;
 use super::{now, ApiError, Message, Payload, Pouch, Received};
+
+/// The one name this build ever writes to the manifest's compression stage.
+///
+/// Naming the algorithm is what SPEC §2.5 asks the manifest to do everywhere
+/// else — "encrypted" alone was never good enough either.
+const COMPRESSION_ALGORITHM: &str = "zstd";
 
 /// A local identifier for a message the relay has not accepted yet.
 ///
@@ -36,13 +43,16 @@ impl Pouch {
         payload: &Payload,
     ) -> Result<String, ApiError> {
         let encoded = serde_json::to_vec(payload).map_err(|_| CryptoError::Encryption)?;
+        // Every payload is compressed, always — see send_message for why this
+        // is not a per-message choice.
+        let compressed = compression::compress(&encoded).map_err(|_| CryptoError::Encryption)?;
 
         let conversation = self
             .conversations
             .get_mut(conversation_id)
             .ok_or(ApiError::UnknownConversation)?;
 
-        let blob = conversation.encrypt(&self.identity, &encoded, &self.provider)?;
+        let blob = conversation.encrypt(&self.identity, &compressed, &self.provider)?;
         let peer_inbox = conversation.peer_inbox_id().to_string();
         let message_id = self.relay.send(&peer_inbox, &blob).await?;
         self.persist_mls_state()?;
@@ -72,7 +82,16 @@ impl Pouch {
 
         let encoded = serde_json::to_vec(&Payload::Text(body.to_string()))
             .map_err(|_| CryptoError::Encryption)?;
-        let blob = conversation.encrypt(&self.identity, &encoded, &self.provider)?;
+
+        // Compress before encrypt, in isolation (D-009, SPEC §6.5.2) — never
+        // across messages, never sharing state with any other call. This is
+        // the one place a message's compressed size is reported, because it
+        // is the one place a real Payload is being compressed rather than a
+        // synthetic one in a test.
+        let compressed = compression::compress(&encoded).map_err(|_| CryptoError::Encryption)?;
+        manifest.compressed(COMPRESSION_ALGORITHM, encoded.len(), compressed.len());
+
+        let blob = conversation.encrypt(&self.identity, &compressed, &self.provider)?;
         manifest.encrypted(
             CIPHERSUITE_NAME,
             AEAD_NAME,
@@ -198,10 +217,16 @@ impl Pouch {
 
             match decrypted {
                 Some((conversation_id, message)) => {
-                    // Anything that fails to parse as a payload is protocol
-                    // noise or a version mismatch, not a message. It is not
-                    // rendered as one.
-                    let Ok(payload) = serde_json::from_slice::<Payload>(&message.plaintext) else {
+                    // Every payload this build sends is compressed (D-009), so
+                    // every payload it receives is decompressed before being
+                    // parsed. Anything that fails either step — corrupt,
+                    // tampered, or sent by a pre-compression build — is
+                    // protocol noise or a version mismatch, not a message. It
+                    // is not rendered as one.
+                    let Ok(decompressed) = compression::decompress(&message.plaintext) else {
+                        continue;
+                    };
+                    let Ok(payload) = serde_json::from_slice::<Payload>(&decompressed) else {
                         continue;
                     };
 

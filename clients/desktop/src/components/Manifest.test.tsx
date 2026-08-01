@@ -99,3 +99,34 @@ describe("manifest rows", () => {
     }
   });
 });
+
+/*
+ * Compression landed in Phase 3. PHASE_1_ROWS above is left as it was —
+ * labelled and dated, not silently rewritten — because it documents what a
+ * Phase 1 send actually produced; this fixture documents what a real send
+ * produces now. Both are true statements about different points in time,
+ * which is the same reason DECISIONS.md is append-only rather than edited.
+ */
+describe("a compressed stage, as Phase 3 actually produces it", () => {
+  const row: ManifestRow = {
+    number: 3,
+    label: "COMPRESSED",
+    detail: "zstd · 3500 → 41 bytes",
+    ran: true,
+  };
+
+  it("renders as having run, not as unimplemented", () => {
+    const html = renderToStaticMarkup(
+      <Manifest
+        summary="6 of 9 stages ran"
+        rows={[...PHASE_1_ROWS.filter((r) => r.number !== 3), row]}
+        failed={false}
+      />,
+    );
+    expect(html).not.toContain("not yet implemented");
+  });
+
+  it("names the algorithm, per the same SPEC §2.5 rule as encryption", () => {
+    expect(row.detail).toContain("zstd");
+  });
+});

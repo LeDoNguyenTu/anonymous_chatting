@@ -79,7 +79,7 @@ missing feature (test §8.6).
      │              text messages: not applicable
      │
   3. compress       zstd, each payload in isolation (D-009)
-     │              text messages below the threshold: not applicable
+     │              every payload, unconditionally — see below
      │
   4. pad            to a fixed bucket, blunting size fingerprinting
      │
@@ -102,6 +102,18 @@ Ordering is security-relevant in two places, and both are load-bearing:
 - **Compress before pad, pad before encrypt.** Compression only works on
   plaintext; padding only hides size if it is the last thing before the
   ciphertext boundary.
+- **Every payload is compressed, with no size threshold.** An earlier sketch
+  of this diagram had short messages skip compression, on the reasoning that
+  zstd's frame overhead can make a very short payload a few bytes larger than
+  it started. That is true and harmless on its own — but skipping compression
+  *sometimes* means a receiver has to know, for a given blob, whether it is
+  looking at compressed or raw bytes before it can decode it. That requires an
+  explicit marker in the wire format, which is protocol design, not a size
+  tweak, and it is exactly the kind of ambiguous-format decision SPEC §2.1
+  warns against admitting a downgrade path through. Compressing unconditionally
+  needs no marker and has no such path. The few bytes lost on a two-word
+  message are negligible next to MLS's own fixed 128-byte padding on every
+  application message regardless.
 
 ## 4. Receive path
 

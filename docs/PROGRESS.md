@@ -13,17 +13,18 @@ Do not begin a phase before the previous phase meets its exit criteria.
 | | |
 |---|---|
 | **Phase complete** | 0 — Foundation · 1 — Working 1:1 encrypted chat · 2 — Storage control and hardening, minus one deliberately deferred item (below) |
-| **Phase next** | 3 — Attachments and sealed sender |
+| **Phase next** | 3 — Attachments and sealed sender. One piece of it — compression, manifest stage 3 — is done; see below for why the rest is blocked. |
 | **Branches** | `main` (repository default) and `develop`, both at the same commit, pushed |
-| **Blocked on** | nothing for Phase 3's sealed-sender half; the attachment-pipeline half needs the same AEAD-outside-MLS decision backup export does — see "Deliberately not built" below |
-| **Tests** | 96 Rust core + 7 end-to-end + 12 relay + 4 server-blindness = 119 Rust · 34 frontend |
-| **CI** | last known green on `main` and `develop` at the Phase 1 commit; Phase 2's commits have not yet run through CI — see note below |
+| **Blocked on** | Attachments and backup export both need one AEAD-outside-MLS decision (SPEC §2.6 stop-and-ask, D-006's note). Sealed sender turns out to need something bigger: this relay's wire protocol carries no sender field at all already, so the only remaining "who sent this" signal is the TCP/TLS source IP a direct connection necessarily exposes — closing that is what Phase 4's Tor onion service does, not a Phase-3-sized change. Building an interim anonymity mechanism to hide it before Tor would be inventing a new protocol construction, which is the same stop-and-ask class as the other two. |
+| **Tests** | 101 Rust core + 8 end-to-end + 12 relay + 4 server-blindness = 125 Rust · 36 frontend |
+| **CI** | last known green on `main` and `develop` at the Phase 1 commit; nothing since has yet run through GitHub Actions — see note below |
 
 **Note on CI.** Everything in this section was verified locally on a Windows
 workstation (`cargo fmt`, `clippy -D warnings`, the full test suite, both
-guardrail scripts, `npm run typecheck`/`test`/`build`) — not by watching a CI
-run. Confirm the GitHub Actions run is green after this push before treating
-Phase 2 as done in the same sense Phase 0 and 1 were.
+guardrail scripts, `npm run typecheck`/`test`/`build`, and a live two-client
+send over a real relay binary) — not by watching a CI run. Confirm the GitHub
+Actions run is green before trusting any of this the way Phase 0 and 1's
+green CI was trusted.
 
 ### Owed to the project owner
 
@@ -420,6 +421,92 @@ missing passphrase refuses rather than silently falling back to the
 placeholder key. The exact commands are in `docs/DECISIONS.md` D-031–D-035
 and in the CLI's own `--help` text (`keep`, `disappear`, `queue`, `changes`,
 `acknowledge`, `passphrase`).
+
+---
+
+## Phase 3 — Attachments and sealed sender · started 2026-08-02
+
+### What Phase 3 actually needs, and why most of it did not start today
+
+SPEC §9 scopes Phase 3 as: the attachment pipeline, the attachment preview
+screen, per-message compression, sealed sender, image/file rendering, and
+activating manifest stages 2, 3, and 6.
+
+Investigated all three headline pieces before writing any code, because two
+of them turned out to need a decision rather than an implementation:
+
+- **Attachments (stage 2, metadata stripping)** need a per-file encryption
+  key generated outside MLS — a file is not a group message. D-006 says
+  application code never invokes an AEAD directly, and the one place that was
+  supposed to already authorize the exception (a stale "D-013" cross-reference,
+  fixed this session) turned out to authorize nothing. Same blocker as backup
+  export from Phase 2.
+- **Sealed sender (stage 6)** turned out to need more than expected. Reading
+  `server/src/http.rs` and `core/src/transport.rs` end to end: the wire
+  protocol already carries no sender field of any kind — `POST /inbox/{id}`
+  takes only the recipient's inbox and a ciphertext body, confirmed by
+  checking both the relay's request handling and the client's request
+  construction. What the relay *can* still learn is the TCP/TLS source IP of
+  whoever connects to submit a blob, correlated against which recipient inbox
+  they posted to. That is not a message-field problem D-026's design already
+  solved; it is a network-layer one, and the only mechanism this project has
+  planned to solve it is Phase 4's Tor onion service. Building an interim
+  anonymity layer to close it before Tor arrives would mean designing a new
+  routing/anonymity construction — the same SPEC §2.6 stop-and-ask class as
+  the AEAD question above, arguably a larger one.
+- **Compression (stage 3)** needed neither. It sits entirely before MLS
+  encryption, uses `zstd` — already a pinned dependency, never actually
+  invoked until now — through its plainest one-shot interface, and SPEC
+  §6.5.2 already specifies the isolation mitigation precisely enough to
+  implement without inventing anything. Built and shipped; see below.
+
+### Compression, done
+
+`core/src/api/compression.rs`: `compress`/`decompress`, each a single
+stateless `zstd` call with no dictionary and no encoder held across calls —
+which is what makes the SPEC §6.5.2 isolation property hold structurally
+rather than by discipline. Wired into both places a payload is serialized
+before encryption (`send_payload`, used for the `Hello` introduction, and
+`send_message`), and reversed in the one place a payload is decrypted before
+parsing (`receive_messages`). Full reasoning, including why every payload is
+compressed unconditionally rather than only above some size threshold, is
+`docs/DECISIONS.md` D-036.
+
+**Wire compatibility note.** A build from before this commit sends
+uncompressed JSON; this build cannot decompress that and drops it silently,
+the same way it already drops anything else that fails to parse as a
+payload. Both clients in any conversation need to be this build or newer.
+Explained in D-036 — this project has no live population of mismatched
+builds to protect, so a clean break was the honest choice over adding
+version-sniffing complexity to preserve compatibility nothing needs.
+
+Verified against a real relay, real binary, not only the test suite:
+
+```
+$ pouch-cli send <conversation> "meeting "×200
+6 of 9 stages ran
+  03  COMPRESSED         zstd · 1611 → 35 bytes
+...
+$ pouch-cli receive   # on the other client
+meeting meeting meeting ...   (1600 characters, byte-identical)
+```
+
+125 Rust tests (up from 119), 36 frontend tests (up from 34). New coverage:
+a compression-isolation test matching §8.7's own wording, an end-to-end test
+sending a real highly-compressible message through two live clients against
+a real relay, and a frontend test confirming the Manifest component renders
+a completed compression stage rather than "not yet implemented."
+
+### What is still owed before Phase 3 can be called done
+
+- [ ] **The AEAD-outside-MLS decision** — attachments and backup export both
+  wait on this. Needs the project owner; see D-006's note and
+  `docs/PROGRESS.md`'s Phase 2 section for the full reasoning.
+- [ ] **Sealed sender** — likely belongs sequenced after Phase 4 (Tor) rather
+  than before it, given what this session found. Worth the project owner's
+  explicit call on reordering rather than assuming it.
+- [ ] Attachment preview screen, image/file rendering — blocked on the
+  pipeline they preview.
 
 ---
 

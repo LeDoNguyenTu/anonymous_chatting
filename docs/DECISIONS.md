@@ -967,3 +967,63 @@ Windows Credential Manager or DPAPI, Keychain, Secret Service — chosen and
 wired per platform, which is exactly the kind of decision this project does
 not make while passing through unrelated work. Recorded here so it is not
 mistaken for done.
+
+---
+
+## D-036 — Compression activated for every payload, unconditionally
+**Date:** 2026-08-02 · **Status:** accepted
+
+**Decision.** Manifest stage 3 (`COMPRESSED`) is live. Every payload —
+`Payload::Text` and the `Hello` introduction alike — is compressed with
+`zstd` immediately after JSON encoding and before the single MLS `encrypt`
+call, via one-shot, dictionary-free, stateless calls
+(`api::compression::compress`/`decompress`). No size threshold: everything
+is compressed, always.
+
+**Why no threshold, when the architecture sketch had one.** `docs/ARCHITECTURE.md`
+originally read "text messages below the threshold: not applicable," with no
+number ever assigned anywhere. A threshold means *some* payloads are
+compressed and some are not, which means a receiver has to know which case a
+given blob is before it can decode it — that requires an explicit marker in
+the wire format. Designing that marker is protocol work, not a size
+optimization, and it opens exactly the kind of ambiguous-format question
+SPEC §2.1 treats as a downgrade path to avoid. Compressing unconditionally
+needs no marker, so there is nothing to get wrong. The cost — a two-word
+message can end up a handful of bytes larger than it started, since zstd's
+frame header is not free — is negligible next to MLS's own fixed 128-byte
+padding on every application message regardless.
+
+**Isolation, and why it holds by construction rather than by discipline.**
+SPEC §6.5.2 requires each payload be compressed in isolation — never across
+messages, never mixing user content with protocol fields — because
+compressing attacker-influenced content together with secret content in a
+shared context is the CRIME/BREACH mechanism: vary the attacker's part,
+read the secret's length off the output size. `compress`/`decompress` here
+are one-shot library calls with no dictionary and no encoder object that
+outlives a single call, so there is no shared context for a future change to
+accidentally introduce *unless* it starts holding a compressor across calls
+— which is precisely what `compression_is_isolated_across_calls` asserts
+does not happen, by compressing a fixed "secret" payload before and after
+compressing two different "attacker" payloads and asserting its compressed
+size never moves.
+
+**Why compression breaks wire compatibility with anything sent before this
+commit, and why that is accepted.** `receive_messages` now treats a
+decompression failure exactly like a malformed payload — silently skipped,
+never rendered as a message (matching the project's already-established rule
+that unparseable bytes are protocol noise, not content). A client built
+before this change sends raw, uncompressed JSON; a client built after this
+change will not be able to decompress it and will silently drop it. This
+project has no version negotiation and no live population running mismatched
+builds against each other, so a clean break is the honest choice over adding
+complexity — a version byte, content-sniffing, or a fallback decompression
+attempt — to paper over compatibility this project does not actually need to
+maintain. If that changes, it is worth a decision of its own rather than an
+assumption baked in here.
+
+**What this does not touch.** The attachment pipeline (SPEC §7.1) has no
+compression step in its own spec — strip, pad, encrypt — so this decision
+does not extend there. Padding (stage 4) and sealed sender (stage 6) remain
+not yet implemented; see D-006's note on why neither has an authorizing
+decision. Backup export (SPEC §7.3) is unaffected and still deferred for the
+same reason.

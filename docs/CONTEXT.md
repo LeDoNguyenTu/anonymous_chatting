@@ -82,7 +82,7 @@ a code defect without checking that first.
 
 ## Settled decisions worth not relitigating
 
-Full reasoning is in `docs/DECISIONS.md` (D-001…D-035). The short version:
+Full reasoning is in `docs/DECISIONS.md` (D-001…D-036). The short version:
 
 - Name is **Pouch** (D-015); "Courier" in the spec was a placeholder.
 - MLS via `openmls =0.8.1`, not Signal Protocol (D-002).
@@ -98,6 +98,8 @@ Full reasoning is in `docs/DECISIONS.md` (D-001…D-035). The short version:
   not something to infer from D-006's general shape.
 - Relay stores four fields, `message_id` random rather than sequential (D-010).
 - Compress → pad → encrypt, each payload compressed in isolation (D-009).
+  Compression itself now runs, unconditionally, no size threshold (D-036) —
+  padding still does not.
 - Phases 1–3 use a self-signed relay certificate pinned by SPKI hash (D-017).
 - SHA-256 is a hash, not encryption (D-001). It appears only inside HKDF.
 - The offline queue stores ciphertext, never plaintext (D-031) — encrypting
@@ -113,12 +115,17 @@ Full reasoning is in `docs/DECISIONS.md` (D-001…D-035). The short version:
 
 Phases 0, 1, and 2 are code complete, with one deliberate exception: encrypted
 backup export/import is not built (see the D-006 note above — it needs a
-decision this session did not have standing to make unilaterally). 119 Rust
-tests and 34 frontend tests pass, verified locally on Windows; **the GitHub
-Actions run for Phase 2's commits has not yet been observed** — confirm it
-before trusting this the way Phase 0/1's "CI green" was trusted.
-**Phase 3 — attachments and sealed sender — is next**, and its attachment half
-is blocked on the same AEAD-outside-MLS decision as backup.
+decision this session did not have standing to make unilaterally). **Phase
+3 is under way**: compression (manifest stage 3, D-036) is done and verified
+against a live relay; the attachment pipeline and sealed sender are both
+blocked — attachments on the same AEAD-outside-MLS decision as backup, and
+sealed sender on something bigger than expected: the wire protocol already
+carries no sender field, so what remains is the TCP/TLS source IP a direct
+connection exposes, which is Phase 4's (Tor) job, not a Phase 3 one. 125 Rust
+tests and 36 frontend tests pass, verified locally on Windows; **none of this
+session's commits have been observed going green in GitHub Actions** —
+confirm that before trusting any of it the way Phase 0/1's "CI green" was
+trusted.
 
 Full detail, the runnable demo, the manual checks still owed, and the ordered
 list of what is next are in `docs/PROGRESS.md`. Read that before starting work.
@@ -134,6 +141,7 @@ have been since Phase 1. If you find yourself looking for `api.rs` or
 | `core/src/api/mod.rs` | `Pouch` — the only type clients touch. Start here. |
 | `core/src/api/storage_controls.rs` | Retention, disappearing messages, identity-change acknowledgement, passphrase set/clear |
 | `core/src/api/messaging.rs` | Send, receive, and `flush_outbox` — the offline-queue retry |
+| `core/src/api/compression.rs` | Per-message zstd, isolated calls only — D-036 |
 | `core/src/crypto/identity.rs` | Identity creation, invite codes |
 | `core/src/crypto/session.rs` | MLS groups, encrypt, decrypt, ratchet config |
 | `core/src/crypto/safety_number.rs` | 60-digit out-of-band verification |
