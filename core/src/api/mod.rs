@@ -7,15 +7,25 @@
 //! If a client appears to need something lower level, the correct response is to
 //! add an operation here — never to expose the module underneath.
 
+mod backup;
+mod compression;
 mod contacts;
 mod error;
 mod messaging;
 mod payload;
+mod storage_controls;
 mod types;
 
+pub use backup::{new_recovery_key, BackupError, RECOVERY_KEY_BYTES};
 pub use error::ApiError;
 pub(crate) use payload::Payload;
-pub use types::{ConversationSummary, IdentityState, Message, Received, SecurityDetails};
+pub use types::{
+    ConversationSummary, IdentityChangeNotice, IdentityState, Message, Received, SecurityDetails,
+};
+
+/// Re-exported so a client can offer the retention choices without reaching
+/// past this module into storage.
+pub use crate::storage::RetentionPolicy;
 
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -39,6 +49,12 @@ pub struct Pouch {
     provider: PouchProvider,
     store: LocalStore,
     relay: RelayClient,
+    /// Where the database lives.
+    ///
+    /// Kept because changing how the database is protected has to update the
+    /// keying sidecar beside it, and the alternative is making every client
+    /// pass the path back in on a call that has nothing else to do with it.
+    db_path: String,
     /// Live conversations, keyed by conversation id.
     ///
     /// Rebuilt from the MLS snapshot on open. Held in memory because an
@@ -77,6 +93,7 @@ impl Pouch {
             store,
             relay: RelayClient::new(relay)?,
             conversations: HashMap::new(),
+            db_path: db_path.to_string(),
         })
     }
 
@@ -111,8 +128,15 @@ impl Pouch {
             store,
             relay: RelayClient::new(relay)?,
             conversations: HashMap::new(),
+            db_path: db_path.to_string(),
         };
         pouch.reload_conversations()?;
+
+        // Retention is applied on open, not only when the setting changes. A
+        // device that was switched off for a month under a 7-day policy must
+        // not come back holding a month of messages.
+        pouch.store.purge_expired(now())?;
+
         Ok(pouch)
     }
 

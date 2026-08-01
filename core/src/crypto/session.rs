@@ -434,6 +434,33 @@ mod tests {
     }
 
     #[test]
+    fn identical_plaintext_produces_different_ciphertext_each_time() {
+        // SPEC §8.1 requires key rotation be tested. The ratchet itself is
+        // `openmls`'s (D-006: this project never touches a nonce or a key
+        // schedule directly), so there is nothing to unit-test inside it — but
+        // whether it is actually advancing generation to generation is
+        // observable from outside without reaching in: the same plaintext,
+        // encrypted twice in a row, must not produce the same bytes. If it
+        // did, either the key or the nonce repeated, which for an AEAD is the
+        // one failure that breaks confidentiality outright rather than merely
+        // degrading it.
+        let (bp, brian, mut bc, _mp, _mai, _mc) = connected();
+
+        let first = bc
+            .encrypt(&brian, b"the same message", &bp)
+            .expect("encrypts");
+        let second = bc
+            .encrypt(&brian, b"the same message", &bp)
+            .expect("encrypts");
+
+        assert_ne!(
+            first, second,
+            "encrypting identical plaintext twice produced identical ciphertext — \
+             the ratchet is not advancing"
+        );
+    }
+
+    #[test]
     fn a_tampered_message_fails_visibly_rather_than_decoding_to_something() {
         // AEAD authentication is what makes "the relay cannot alter messages"
         // true. If a flipped byte produced a plausible plaintext, the claim

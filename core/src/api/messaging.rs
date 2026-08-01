@@ -9,10 +9,30 @@ use crate::crypto::{
     Conversation, CryptoError, AEAD_NAME, CIPHERSUITE_NAME, KEY_AGREEMENT_NAME, SIGNATURE_NAME,
 };
 use crate::manifest::Manifest;
-use crate::storage::{Direction, StoredContact, StoredMessage};
+use crate::storage::{Direction, QueuedMessage, StoredContact, StoredMessage};
 use crate::transport::Route;
 
+use super::compression;
 use super::{now, ApiError, Message, Payload, Pouch, Received};
+
+/// The one name this build ever writes to the manifest's compression stage.
+///
+/// Naming the algorithm is what SPEC §2.5 asks the manifest to do everywhere
+/// else — "encrypted" alone was never good enough either.
+const COMPRESSION_ALGORITHM: &str = "zstd";
+
+/// A local identifier for a message the relay has not accepted yet.
+///
+/// Delivered messages are keyed by the identifier the relay returns. A queued
+/// message has no such identifier yet but still has to appear in the thread, so
+/// it gets a random one of its own. Random rather than sequential for the same
+/// reason the relay's are (D-010): a counter is an ordering oracle.
+fn local_id() -> String {
+    use rand::RngCore;
+    let mut bytes = [0u8; 16];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    hex::encode(bytes)
+}
 
 impl Pouch {
     /// Encrypts and posts one payload. Shared by `send_message` and the
@@ -23,13 +43,16 @@ impl Pouch {
         payload: &Payload,
     ) -> Result<String, ApiError> {
         let encoded = serde_json::to_vec(payload).map_err(|_| CryptoError::Encryption)?;
+        // Every payload is compressed, always — see send_message for why this
+        // is not a per-message choice.
+        let compressed = compression::compress(&encoded).map_err(|_| CryptoError::Encryption)?;
 
         let conversation = self
             .conversations
             .get_mut(conversation_id)
             .ok_or(ApiError::UnknownConversation)?;
 
-        let blob = conversation.encrypt(&self.identity, &encoded, &self.provider)?;
+        let blob = conversation.encrypt(&self.identity, &compressed, &self.provider)?;
         let peer_inbox = conversation.peer_inbox_id().to_string();
         let message_id = self.relay.send(&peer_inbox, &blob).await?;
         self.persist_mls_state()?;
@@ -46,6 +69,10 @@ impl Pouch {
         conversation_id: &str,
         body: &str,
     ) -> Result<Manifest, ApiError> {
+        // Anything already waiting goes first, so a reconnected client does not
+        // deliver today's message ahead of yesterday's.
+        self.flush_outbox().await?;
+
         let conversation = self
             .conversations
             .get_mut(conversation_id)
@@ -55,7 +82,16 @@ impl Pouch {
 
         let encoded = serde_json::to_vec(&Payload::Text(body.to_string()))
             .map_err(|_| CryptoError::Encryption)?;
-        let blob = conversation.encrypt(&self.identity, &encoded, &self.provider)?;
+
+        // Compress before encrypt, in isolation (D-009, SPEC §6.5.2) — never
+        // across messages, never sharing state with any other call. This is
+        // the one place a message's compressed size is reported, because it
+        // is the one place a real Payload is being compressed rather than a
+        // synthetic one in a test.
+        let compressed = compression::compress(&encoded).map_err(|_| CryptoError::Encryption)?;
+        manifest.compressed(COMPRESSION_ALGORITHM, encoded.len(), compressed.len());
+
+        let blob = conversation.encrypt(&self.identity, &compressed, &self.provider)?;
         manifest.encrypted(
             CIPHERSUITE_NAME,
             AEAD_NAME,
@@ -68,6 +104,30 @@ impl Pouch {
             Ok(id) => id,
             Err(err) => {
                 manifest.failed_at_routing(&err.to_string());
+
+                // The ratchet advanced when this was encrypted, so the blob has
+                // to be kept and the advance has to be recorded. Dropping
+                // either would mean the next send reuses a generation the peer
+                // has already been promised.
+                let local_id = local_id();
+                self.store.put_message(&StoredMessage {
+                    id: local_id.clone(),
+                    conversation_id: conversation_id.to_string(),
+                    direction: Direction::Sent,
+                    body: body.to_string(),
+                    at: now(),
+                })?;
+                self.store.enqueue(&QueuedMessage {
+                    id: local_id,
+                    conversation_id: conversation_id.to_string(),
+                    peer_inbox,
+                    blob,
+                    at: now(),
+                    attempts: 1,
+                    last_error: Some(err.to_string()),
+                })?;
+                self.persist_mls_state()?;
+
                 return Err(err.into());
             }
         };
@@ -88,12 +148,45 @@ impl Pouch {
         Ok(manifest)
     }
 
+    /// Posts everything waiting, oldest first, and stops at the first failure.
+    ///
+    /// Returns how many were delivered. SPEC §8.2 requires the queue retry on
+    /// reconnect; this is the retry, and every path that touches the relay
+    /// calls it first so "reconnect" needs no separate detection.
+    ///
+    /// Stopping at the first failure rather than continuing is deliberate. The
+    /// blobs are ratchet generations in order, and posting a later one past a
+    /// blocked earlier one hands the recipient exactly the out-of-order
+    /// sequence that cost half a run in D-028.
+    pub async fn flush_outbox(&mut self) -> Result<usize, ApiError> {
+        let mut delivered = 0;
+
+        for queued in self.store.queued()? {
+            match self.relay.send(&queued.peer_inbox, &queued.blob).await {
+                Ok(_) => {
+                    self.store.dequeue(&queued.id)?;
+                    delivered += 1;
+                }
+                Err(err) => {
+                    self.store.record_attempt(&queued.id, &err.to_string())?;
+                    break;
+                }
+            }
+        }
+
+        Ok(delivered)
+    }
+
     /// Collects, decrypts, and stores everything waiting in this inbox.
     ///
     /// Returns what arrived. A blob that fails to decrypt is reported as an
     /// error rather than skipped — a silently dropped message hides exactly the
     /// event the user needs to see.
     pub async fn receive_messages(&mut self) -> Result<Received, ApiError> {
+        // Reaching the relay at all means the connection is back, so this is
+        // the natural retry point for anything queued while it was not.
+        self.flush_outbox().await?;
+
         let envelopes = self.relay.collect(self.identity.inbox_id()).await?;
         let mut received = Received::default();
         let mut handled = Vec::new();
@@ -124,12 +217,32 @@ impl Pouch {
 
             match decrypted {
                 Some((conversation_id, message)) => {
-                    // Anything that fails to parse as a payload is protocol
-                    // noise or a version mismatch, not a message. It is not
-                    // rendered as one.
-                    let Ok(payload) = serde_json::from_slice::<Payload>(&message.plaintext) else {
+                    // Every payload this build sends is compressed (D-009), so
+                    // every payload it receives is decompressed before being
+                    // parsed. Anything that fails either step — corrupt,
+                    // tampered, or sent by a pre-compression build — is
+                    // protocol noise or a version mismatch, not a message. It
+                    // is not rendered as one.
+                    let Ok(decompressed) = compression::decompress(&message.plaintext) else {
                         continue;
                     };
+                    let Ok(payload) = serde_json::from_slice::<Payload>(&decompressed) else {
+                        continue;
+                    };
+
+                    // Identity change detection, before anything is acted on.
+                    //
+                    // `sender_key` comes from the authenticated MLS credential,
+                    // so it is what the sender proved rather than what the relay
+                    // asserted. If it differs from the key this conversation was
+                    // established with, the person on the other end is presenting
+                    // a different identity: `replace_identity_key` records the
+                    // old one, notes the date, and drops verification. The user
+                    // is told; nothing is decided for them (SPEC §6.7.6).
+                    if let Some(existing) = self.store.conversation_contact(&conversation_id)? {
+                        self.store
+                            .replace_identity_key(&existing, &message.sender_key, now())?;
+                    }
 
                     match payload {
                         Payload::Hello {
@@ -140,7 +253,15 @@ impl Pouch {
                             // them. Learned over the authenticated channel, so
                             // the relay cannot have influenced it — but it still
                             // does not make them verified.
-                            let contact_id = hex::encode(&message.sender_key);
+                            //
+                            // The contact already attached to this conversation
+                            // wins over one derived from the key. Deriving it
+                            // afresh would turn a key change into a second
+                            // contact rather than a warning about the first.
+                            let contact_id = self
+                                .store
+                                .conversation_contact(&conversation_id)?
+                                .unwrap_or_else(|| hex::encode(&message.sender_key));
                             self.store.put_contact(&StoredContact {
                                 id: contact_id.clone(),
                                 display_name,
@@ -187,6 +308,10 @@ impl Pouch {
             .acknowledge(self.identity.inbox_id(), &handled)
             .await?;
         self.persist_mls_state()?;
+
+        // Retention is enforced here as well as on open, so a client left
+        // running for a week under a 24-hour policy does not accumulate one.
+        self.store.purge_expired(now())?;
 
         Ok(received)
     }

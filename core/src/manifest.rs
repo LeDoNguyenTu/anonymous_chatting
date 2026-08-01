@@ -132,10 +132,11 @@ impl Manifest {
     /// Begins a manifest for a plain text message.
     ///
     /// Only stage 1 is marked as having run, because at this point only stage 1
-    /// has. Stages 2 and 3 are marked not applicable with the reason, and 6 and
-    /// 7's sealing counterpart is marked not yet implemented, because sealed
-    /// sender arrives in Phase 3. Everything else is pending until the code that
-    /// performs it says otherwise.
+    /// has. Stage 2 is marked not applicable — there is no attachment metadata
+    /// on a text message. Stage 3 (compression) landed in Phase 3 and starts
+    /// `Pending` like every other stage still to run. Padding and sealed
+    /// sender remain not yet implemented; see `docs/DECISIONS.md` D-006's note
+    /// on why neither has an authorizing decision yet.
     pub fn new(plaintext_len: usize) -> Self {
         Self {
             stages: vec![
@@ -147,10 +148,7 @@ impl Manifest {
                     Stage::Strip,
                     StageOutcome::NotApplicable("text message".to_string()),
                 ),
-                // Phase 1 does not compress. Reported as not yet implemented
-                // rather than as "n/a", because compression *would* apply to a
-                // text message — it simply is not built.
-                (Stage::Compress, StageOutcome::NotYetImplemented),
+                (Stage::Compress, StageOutcome::Pending),
                 (Stage::Pad, StageOutcome::NotYetImplemented),
                 (Stage::Encrypt, StageOutcome::Pending),
                 (Stage::Seal, StageOutcome::NotYetImplemented),
@@ -165,6 +163,20 @@ impl Manifest {
         if let Some(slot) = self.stages.iter_mut().find(|(s, _)| *s == stage) {
             slot.1 = outcome;
         }
+    }
+
+    /// Records that compression ran, naming the algorithm and the size change.
+    ///
+    /// The isolation guarantee (D-009, SPEC §6.5.2) is a property of *how*
+    /// `api::compression` calls the library, not something this line can show
+    /// — but the byte counts are still worth reporting, because they are the
+    /// visible evidence that something real happened rather than a stage
+    /// quietly rubber-stamping itself.
+    pub fn compressed(&mut self, algorithm: &str, before: usize, after: usize) {
+        self.set(
+            Stage::Compress,
+            StageOutcome::Ran(format!("{algorithm} · {before} → {after} bytes")),
+        );
     }
 
     /// Records that encryption ran, naming the actual mechanisms.
@@ -328,11 +340,13 @@ mod tests {
 
     #[test]
     fn unbuilt_stages_report_as_unimplemented_never_as_complete() {
-        // SPEC §9, Phase 1: stages 2, 3, 6 and 7's sealing are not built.
-        // They must say so rather than silently disappearing or claiming
-        // success.
+        // Padding and sealed sender remain unbuilt as of Phase 3 — see
+        // DECISIONS.md D-006's note on why neither has an authorizing
+        // decision yet. They must say so rather than silently disappearing or
+        // claiming success. Compression is no longer in this list: it landed
+        // this phase and is covered separately below.
         let m = Manifest::new(100);
-        for stage in [Stage::Compress, Stage::Pad, Stage::Seal] {
+        for stage in [Stage::Pad, Stage::Seal] {
             let (_, outcome) = m
                 .stages()
                 .iter()
@@ -346,6 +360,20 @@ mod tests {
             );
             assert!(!outcome.ran());
         }
+    }
+
+    #[test]
+    fn compression_reports_the_algorithm_and_the_size_change() {
+        let mut m = Manifest::new(100);
+        m.compressed("zstd", 100, 40);
+
+        let (_, outcome) = m
+            .stages()
+            .iter()
+            .find(|(s, _)| *s == Stage::Compress)
+            .expect("stage present");
+        assert!(outcome.ran());
+        assert_eq!(outcome.detail(), "zstd · 100 → 40 bytes");
     }
 
     #[test]

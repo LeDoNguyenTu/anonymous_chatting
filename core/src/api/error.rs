@@ -1,8 +1,11 @@
 //! What a client operation can fail with.
 
 use crate::crypto::CryptoError;
+use crate::keying::KeyingError;
 use crate::storage::StorageError;
 use crate::transport::TransportError;
+
+use super::BackupError;
 
 /// Anything a client operation can fail with.
 ///
@@ -19,6 +22,12 @@ pub enum ApiError {
     /// Talking to the relay failed.
     #[error(transparent)]
     Transport(#[from] TransportError),
+    /// Obtaining or changing the database key failed.
+    #[error(transparent)]
+    Keying(#[from] KeyingError),
+    /// A backup could not be produced or restored.
+    #[error(transparent)]
+    Backup(#[from] BackupError),
     /// The named contact is not known on this device.
     #[error("no contact with that identifier exists on this device")]
     UnknownContact,

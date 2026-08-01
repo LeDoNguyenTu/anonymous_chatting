@@ -35,17 +35,31 @@ COMMANDS
   safety <contact>            Print the safety number for a contact
   verify <contact>            Mark a contact verified after comparing
   security                    Print every mechanism in use
+
+STORAGE
+  keep [forever|30d|7d|24h]   How long messages are kept on this device
+  disappear <conv> [secs|off] Disappearing messages for one conversation
+  queue                       Messages waiting for the relay to come back
+  changes                     Contacts whose identity key changed
+  acknowledge <contact>       Answer an identity change warning
+  passphrase [set|off]        Protect this device with a passphrase
+  backup export <path>        Write an encrypted backup, print the recovery key
+  backup import <path>        Restore a backup onto POUCH_DB (must be empty)
   wipe                        Destroy all local data
 
 ENVIRONMENT
-  POUCH_DB      path to the local database        (default ./pouch.db)
-  POUCH_RELAY   relay base URL                    (default http://127.0.0.1:8443)
-  POUCH_KEY     64 hex characters, the database key
+  POUCH_DB            path to the local database    (default ./pouch.db)
+  POUCH_RELAY         relay base URL                (default http://127.0.0.1:8443)
+  POUCH_PASSPHRASE    passphrase, if this device is protected by one
+  POUCH_RECOVERY_KEY  recovery key, for backup import only
+  POUCH_KEY           64 hex characters, the database key
 
   POUCH_KEY is a development convenience and is not how a real client should
-  hold a key. The desktop and Android clients take it from the OS keystore, or
-  derive it from a passphrase with Argon2id. An environment variable is
-  readable by other processes and lands in shell history.
+  hold a key. An environment variable is readable by other processes and lands
+  in shell history. With no POUCH_KEY the client reads the keying file beside
+  the database and uses a passphrase if one is set, or the development device
+  key if not. POUCH_PASSPHRASE and POUCH_RECOVERY_KEY have the same
+  shell-history problem and exist for the same reason: this client is headless.
 ";
 
 #[tokio::main]
@@ -67,6 +81,19 @@ async fn main() -> Result<()> {
         "list" => commands::messaging::list(&args),
         "read" => commands::messaging::read(&args),
         "security" => commands::device::security(&args),
+        "keep" => commands::storage::keep(&args),
+        "disappear" => commands::storage::disappear(&args),
+        "queue" => commands::storage::queue(&args),
+        "changes" => commands::storage::changes(&args),
+        "acknowledge" => commands::storage::acknowledge(&args),
+        "passphrase" => commands::storage::passphrase_command(&args),
+        "backup" => match args.get(1).map(String::as_str) {
+            Some("export") => commands::backup::export(&args),
+            Some("import") => commands::backup::import(&args).await,
+            _ => {
+                bail!("usage: pouch-cli backup <export|import> <path>");
+            }
+        },
         "wipe" => commands::device::wipe(&args),
         other => {
             print!("{USAGE}");

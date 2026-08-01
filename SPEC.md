@@ -632,15 +632,19 @@ Disappearing messages, retention settings, wipe-all. Passphrase option with Argo
 
 **Exit:** every storage control functional; identity change modal verified manually; suite green in CI.
 
-### Phase 3 — Attachments and sealed sender (≈3 weeks)
-Attachment pipeline per §7.1. Attachment preview screen with the strip manifest. Per-message compression with the isolation constraint in §6.5.2. Sealed sender so the relay cannot see who sent what. Image and file rendering. Manifest stages 2, 3, and 6 activated.
+### Phase 3 — Attachments and compression (≈3 weeks)
+Attachment pipeline per §7.1. Attachment preview screen with the strip manifest. Per-message compression with the isolation constraint in §6.5.2. Image and file rendering. Manifest stages 2 and 3 activated.
+
+Sealed sender (manifest stage 6) was originally scoped here but is **not** a Phase 3 exit requirement — see the note under Phase 4 for why, decided 2026-08-02. Everything else in this phase does not depend on Tor and proceeds on its own schedule.
 
 **Exit:** metadata stripping test (§8.4) and padding test (§8.5) pass. An image sent through the system and inspected server-side reveals no EXIF, no filename, no sender.
 
-### Phase 4 — Tor transport (≈2 weeks)
+### Phase 4 — Tor transport, then sealed sender (≈2 weeks + sealed sender)
 Relay as an onion service. `arti` embedded in core. Transport settings screen. Fixed-size padding, optional cover traffic. Threat model updated to reflect what changed.
 
-**Exit:** messaging works end to end over Tor; server state confirmed to contain no client IP; Custody Strip shows `TOR` accurately.
+**Sealed sender moved here from Phase 3, decided 2026-08-02.** The relay's wire protocol already carries no sender field — confirmed by reading `server/src/http.rs` and `core/src/transport.rs` — so the only remaining signal of who sent a message is the TCP/TLS source IP a direct connection necessarily exposes. That is a network-layer problem, not a message-field one, and this project has exactly one planned mechanism for closing it: this phase's onion service. Building a separate anonymity layer to close it earlier would mean designing a new routing construction outside an audited protocol — the same class of decision SPEC §2.6 reserves for a stop-and-ask, and a larger one than Phase 3's attachment encryption turned out to be. Manifest stage 6 activates here, once Tor exists for it to report honestly.
+
+**Exit:** messaging works end to end over Tor; server state confirmed to contain no client IP; Custody Strip shows `TOR` accurately; manifest stage 6 (`SENDER SEALED`) reports as ran rather than not yet implemented.
 
 ### Phase 5 — Android client (≈4+ weeks)
 Core compiled for Android via JNI. Kotlin and Compose UI mirroring the desktop feature set and design system. Keystore integration. Signed APK.

@@ -3,15 +3,24 @@
 //! One module, because there should be exactly one answer to "how does a key
 //! reach this process" and it should be possible to find it.
 //!
-//! **Nothing here is a finished security control.** SPEC §7.2 requires the
-//! database key to come from the OS keystore — Keychain on macOS, DPAPI on
-//! Windows, Secret Service on Linux, Keystore on Android — or to be derived
-//! from a user passphrase with Argon2id when the user opts in. Neither is
-//! implemented. What is here is a development placeholder, named so that no
-//! call site can use it without saying so.
+//! Two of the three routes SPEC §7.2 describes are implemented:
+//!
+//! - **Passphrase**, via Argon2id with pinned parameters. The key exists only
+//!   while the application is running. Nothing on disk can be turned into it.
+//! - **Device file**, the development placeholder. It protects against nothing
+//!   — the key sits beside the database it unlocks — and is named so that no
+//!   call site can use it without saying so.
+//!
+//! The third, the OS keystore (Keychain, DPAPI, Secret Service, Android
+//! Keystore), is not implemented. It needs a platform dependency that touches
+//! key storage directly, which is a stop-and-ask under SPEC §2.6 rather than
+//! something to pick while passing.
+//!
+//! Which route a database uses is recorded in a small sidecar file, because the
+//! answer has to be known *before* the encrypted database can be opened.
 
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use rand::rngs::OsRng;
 use rand::RngCore;
@@ -19,6 +28,9 @@ use zeroize::Zeroize;
 
 /// Length of a SQLCipher key, in bytes.
 pub const KEY_BYTES: usize = 32;
+
+/// Length of an Argon2id salt, in bytes.
+const SALT_BYTES: usize = 16;
 
 /// Things that can go wrong obtaining a key.
 #[derive(Debug, thiserror::Error)]
@@ -29,6 +41,99 @@ pub enum KeyingError {
     /// The key file exists but does not hold a key.
     #[error("the device key file is not a valid key")]
     Malformed,
+    /// The passphrase could not be turned into a key.
+    #[error("the passphrase could not be used to derive a key")]
+    Derivation,
+    /// A passphrase was required and none was supplied.
+    #[error("this device is passphrase-protected — a passphrase is required to open it")]
+    PassphraseRequired,
+}
+
+/// How a given database is unlocked.
+///
+/// Recorded beside the database rather than inside it, because it has to be
+/// readable before the database can be opened.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeySource {
+    /// A random key in a file next to the database. Protects against nothing.
+    DeviceFile,
+    /// Argon2id over a passphrase the user supplies each time, with this salt.
+    Passphrase {
+        /// The Argon2id salt. Not secret, and useless on its own.
+        salt: Vec<u8>,
+    },
+}
+
+impl KeySource {
+    /// Whether opening this database requires the user to type something.
+    pub fn needs_passphrase(&self) -> bool {
+        matches!(self, KeySource::Passphrase { .. })
+    }
+}
+
+/// The sidecar path for a database path.
+///
+/// A plain suffix rather than a hidden file: a user who moves their database
+/// should be able to see that this belongs with it.
+pub fn sidecar_path(db_path: &str) -> PathBuf {
+    PathBuf::from(format!("{db_path}.keying"))
+}
+
+/// Reads how a database is unlocked.
+///
+/// A missing sidecar means the device-file placeholder, which is what every
+/// Phase 1 database used. Treating "absent" as "passphrase" would lock people
+/// out of their own history on upgrade.
+pub fn key_source(db_path: &str) -> Result<KeySource, KeyingError> {
+    let path = sidecar_path(db_path);
+    if !path.exists() {
+        return Ok(KeySource::DeviceFile);
+    }
+
+    let raw = std::fs::read(&path)?;
+    match raw.split_first() {
+        // Version byte 1, device file, and nothing after it.
+        Some((1, [])) => Ok(KeySource::DeviceFile),
+        // Version byte 2, passphrase, followed by the salt.
+        Some((2, salt)) if salt.len() == SALT_BYTES => Ok(KeySource::Passphrase {
+            salt: salt.to_vec(),
+        }),
+        _ => Err(KeyingError::Malformed),
+    }
+}
+
+/// Records how a database is unlocked.
+pub fn set_key_source(db_path: &str, source: &KeySource) -> Result<(), KeyingError> {
+    let mut bytes = Vec::with_capacity(1 + SALT_BYTES);
+    match source {
+        KeySource::DeviceFile => bytes.push(1),
+        KeySource::Passphrase { salt } => {
+            bytes.push(2);
+            bytes.extend_from_slice(salt);
+        }
+    }
+    write_private(&sidecar_path(db_path), &bytes)
+}
+
+/// The conventional device-key path for a database path.
+pub fn device_key_path(db_path: &str) -> PathBuf {
+    PathBuf::from(format!("{db_path}.key"))
+}
+
+/// Obtains the key for a database, whichever way it is protected.
+///
+/// The one call a client should need. `passphrase` is ignored for a
+/// device-file database and required for a passphrase-protected one — supplying
+/// none for the latter is an error rather than a silent fall back to the
+/// placeholder, which would turn "protected" into "not" without saying so.
+pub fn unlock(db_path: &str, passphrase: Option<&str>) -> Result<Vec<u8>, KeyingError> {
+    match key_source(db_path)? {
+        KeySource::DeviceFile => development_device_key(&device_key_path(db_path)),
+        KeySource::Passphrase { salt } => {
+            let passphrase = passphrase.ok_or(KeyingError::PassphraseRequired)?;
+            key_from_passphrase(passphrase, &salt).map_err(|_| KeyingError::Derivation)
+        }
+    }
 }
 
 /// Reads, or creates, a random device key stored beside the database.
@@ -228,5 +333,97 @@ mod tests {
         let mut key = vec![0xAB; KEY_BYTES];
         erase(&mut key);
         assert!(key.iter().all(|b| *b == 0));
+    }
+
+    fn db(dir: &tempfile::TempDir) -> String {
+        dir.path().join("pouch.db").to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn a_database_with_no_sidecar_uses_the_device_file() {
+        // Every Phase 1 database is in this state. Reading "absent" as
+        // "passphrase" would lock people out of their own history on upgrade.
+        let dir = tempfile::tempdir().expect("temp dir");
+        assert_eq!(key_source(&db(&dir)).expect("reads"), KeySource::DeviceFile);
+    }
+
+    #[test]
+    fn a_key_source_round_trips() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = db(&dir);
+
+        let salt = new_salt();
+        set_key_source(&path, &KeySource::Passphrase { salt: salt.clone() }).expect("writes");
+
+        match key_source(&path).expect("reads") {
+            KeySource::Passphrase { salt: back } => assert_eq!(back, salt),
+            other => panic!("expected a passphrase source, got {other:?}"),
+        }
+
+        set_key_source(&path, &KeySource::DeviceFile).expect("writes");
+        assert_eq!(key_source(&path).expect("reads"), KeySource::DeviceFile);
+    }
+
+    #[test]
+    fn a_corrupt_sidecar_is_a_named_error_not_a_silent_downgrade() {
+        // Falling back to the device file here would turn "protected" into
+        // "not" without telling anyone.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = db(&dir);
+        std::fs::write(sidecar_path(&path), b"\x02short").expect("writes");
+
+        assert!(matches!(key_source(&path), Err(KeyingError::Malformed)));
+    }
+
+    #[test]
+    fn unlocking_a_protected_database_without_a_passphrase_is_refused() {
+        // The important one. A missing passphrase must not fall back to the
+        // placeholder key, because that would open a database the user
+        // believes is protected.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = db(&dir);
+        set_key_source(&path, &KeySource::Passphrase { salt: new_salt() }).expect("writes");
+
+        assert!(matches!(
+            unlock(&path, None),
+            Err(KeyingError::PassphraseRequired)
+        ));
+    }
+
+    #[test]
+    fn unlocking_yields_the_same_key_each_time() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = db(&dir);
+        set_key_source(&path, &KeySource::Passphrase { salt: new_salt() }).expect("writes");
+
+        let a = unlock(&path, Some("correct horse battery staple")).expect("unlocks");
+        let b = unlock(&path, Some("correct horse battery staple")).expect("unlocks");
+        assert_eq!(a, b);
+        assert_eq!(a.len(), KEY_BYTES);
+
+        let c = unlock(&path, Some("wrong passphrase")).expect("derives");
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn the_sidecar_holds_no_key_material() {
+        // It holds a salt, which is not secret. If a key ever appeared here the
+        // passphrase would be pointless.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = db(&dir);
+        let salt = new_salt();
+        set_key_source(&path, &KeySource::Passphrase { salt: salt.clone() }).expect("writes");
+
+        let key = key_from_passphrase("a passphrase", &salt).expect("derives");
+        let raw = std::fs::read(sidecar_path(&path)).expect("reads");
+        assert!(
+            !raw.windows(KEY_BYTES).any(|w| w == key.as_slice()),
+            "the derived key is sitting in the sidecar"
+        );
+        assert_eq!(
+            raw.len(),
+            1 + SALT_BYTES,
+            "the sidecar holds more than a salt"
+        );
     }
 }

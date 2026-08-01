@@ -67,6 +67,21 @@ impl Received {
     }
 }
 
+/// A contact's identity key having changed, waiting to be answered.
+///
+/// Carries the facts SPEC §6.7.6 requires the modal to state — who, and when —
+/// and no verdict. The copy explains both innocent and hostile readings and
+/// leaves the decision with the user.
+#[derive(Debug, Clone)]
+pub struct IdentityChangeNotice {
+    /// Which contact.
+    pub contact_id: String,
+    /// Their local-only display name.
+    pub contact_name: String,
+    /// When the change was noticed, seconds since the Unix epoch.
+    pub changed_at: u64,
+}
+
 /// A message as a client sees it.
 #[derive(Debug, Clone)]
 pub struct Message {

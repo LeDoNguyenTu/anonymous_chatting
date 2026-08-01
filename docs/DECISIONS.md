@@ -140,9 +140,15 @@ authentication key, not merely one message. The way to never reuse a nonce is to
 never be the code that picks one. MLS owns the key schedule and the nonce
 derivation; this project stays out of it.
 
-The one place a per-file key is generated directly is the attachment pipeline
-(Phase 3, D-013), and that is flagged there as the single highest-risk piece of
-code in the repository.
+The attachment pipeline (Phase 3, SPEC §7.1) will need a per-file key generated
+outside MLS, since a file is not a group message. **This entry previously cited
+"D-013" as the decision authorizing that; D-013 is the Tor-vs-VPN decision and
+says nothing about attachments.** No entry currently designs or authorizes
+AEAD-outside-MLS usage for either the attachment pipeline or backup export
+(SPEC §7.3, which has the identical shape — a file, not a group message). Both
+are stop-and-ask under SPEC §2.6 when Phase 3 starts them, precisely because
+this decision's own rule is "application code never calls an AEAD directly,"
+and a file-encryption feature is exactly a case where it must.
 
 ---
 
@@ -794,3 +800,289 @@ with a reason, not made invisible.
   what Android runs on.
 - Real TLS lands. RUSTSEC-2025-0134 (`rustls-pemfile` unmaintained) is ignored
   because nothing parses PEM today.
+
+---
+
+## D-031 — The offline queue stores ciphertext, not plaintext
+**Date:** 2026-08-02 · **Status:** accepted
+
+**Decision.** A message that fails to reach the relay is encrypted once, at
+send time, and the finished MLS ciphertext is what sits in the queue. A retry
+re-POSTs that blob. It never re-encrypts.
+
+**Why this needed a decision rather than being obvious.** The queue could
+instead have stored the plaintext body and encrypted at flush time, which
+looks simpler and avoids a new BLOB column. It is wrong for a reason specific
+to MLS: encrypting advances the ratchet. Re-encrypting on every failed
+attempt would burn a generation per attempt rather than per message, and
+would hand the recipient gaps in the generation sequence that its
+out-of-order tolerance has to absorb. That tolerance is small — five, by
+default — and D-028 already recorded what happens when it is exceeded: half
+of a twelve-message run was silently lost. Storing plaintext and
+re-encrypting at flush time would reintroduce that fault through a new door.
+
+**Rejected: pin the ratchet until delivery confirms.** Would avoid the
+generation-burn problem, but blocks every *other* conversation's use of the
+same client state on one unreachable peer, and openmls has no supported API
+for suspending a single group's epoch progression independent of the rest.
+
+**Consequence accepted.** The queue holds ciphertext, which is useless
+without the MLS state that produced it — consistent with everything else this
+project stores, but worth stating because it means a queued message cannot be
+inspected or edited before it sends. There was never a requirement that it
+should be.
+
+---
+
+## D-032 — Retention deletes are `secure_delete`, not merely `DELETE`
+**Date:** 2026-08-02 · **Status:** accepted
+
+**Decision.** `PRAGMA secure_delete = ON` is set on every database open, in
+addition to the `VACUUM` that `wipe()` already ran.
+
+**Why `VACUUM` on wipe was not enough once retention shipped.** `wipe()` is
+rare and already paid `VACUUM`'s cost. Retention purges are frequent — every
+open, every receive, every settings change — and SQLite's ordinary `DELETE`
+unlinks a row without overwriting its bytes; they sit in a free page until
+something else happens to reuse it. A user who sets 24-hour retention
+specifically to limit what a later compromise can reach would have every
+"deleted" message still recoverable from the file until an unrelated write
+happened to land on that page. `secure_delete` overwrites on every delete, at
+the cost of one extra page write each time — a cost worth paying continuously
+rather than only at `VACUUM` time, which for retention would be never.
+
+**Rejected: `VACUUM` after every purge.** Correct, but `VACUUM` rewrites the
+entire database file. Doing that after every retention sweep turns a
+background purge into an operation whose cost scales with total history size,
+on every receive.
+
+---
+
+## D-033 — `INSERT OR REPLACE` was silently deleting conversations
+**Date:** 2026-08-02 · **Status:** fixed, not merely mitigated
+
+**What was found.** `put_contact` and `put_conversation` used `INSERT OR
+REPLACE`, present since Phase 1. SQLite implements `REPLACE` as delete-then-
+insert, and this schema enforces foreign keys with `ON DELETE CASCADE`.
+Re-adding a contact already known — which happens on every Hello received
+after the first, since the Hello path always calls `put_contact` — deleted
+the contact row, which cascaded into `conversations`, which cascaded into
+`messages`. The entire thread with that contact was erased, silently, as a
+side effect of receiving a message from them.
+
+**Why Phase 1's tests did not catch it.** No test re-added a contact that
+already existed with a live conversation attached; every existing fixture
+created each contact exactly once. Found while writing a Phase 2 test helper
+that (correctly, per the schema) called `put_contact` twice for the same
+person across two conversations.
+
+**Fix.** Both became upserts (`ON CONFLICT DO UPDATE`) that touch only the
+mutable fields — display name and inbox address — and leave `verified` and
+`public_key` untouched on conflict. That second part is deliberate and not
+incidental to the fix: a rewrite that touched the key would be a route for an
+identity-key change to bypass the warning modal entirely (D-034), and a
+rewrite that touched `verified` would silently drop a mark the user
+established out of band, which Prime Directive 3 forbids regardless of cause.
+
+**Verified by making it fail.** A test reproduces the exact sequence —
+contact, conversation, message, re-add the same contact — against the
+pre-fix code first, confirmed it destroyed the thread, then confirmed the
+upsert preserves it. The same test also asserts the rename still applies,
+so the fix is not simply "never update."
+
+**Where else this applies.** Any future table with a foreign key and an
+`INSERT OR REPLACE` on its parent has the same failure shape. None remain in
+the schema as of this entry.
+
+---
+
+## D-034 — Identity change detection compares the authenticated sender key
+**Date:** 2026-08-02 · **Status:** accepted
+
+**Decision.** On every received message, the sender's MLS credential key —
+authenticated by the protocol, not asserted by the relay — is compared
+against the key the conversation was established with. A mismatch calls
+`replace_identity_key`, which records the old key and the date, and
+unconditionally clears `verified`.
+
+**Why clearing verification is not optional.** The user compared a safety
+number derived from the *old* key. That comparison is evidence about nothing
+regarding a new key. Leaving `verified` set after a key change would be the
+interface asserting a check that was never performed against the key
+actually in use — the exact shape Prime Directive 3 exists to forbid, applied
+to a case Phase 1 had no mechanism to even detect.
+
+**Acknowledging is not verifying, deliberately kept as two separate booleans
+rather than one.** SPEC §6.7.6 requires "continue without verifying" to be a
+real, unhidden option, because burying it is how a user ends up clicking the
+reassuring button instead — which would be worse, since that one claims a
+check that did not happen. Collapsing "the user answered the modal" and "the
+user verified a safety number" into a single flag would make that impossible
+to represent: there would be no way to silence the modal without also lying
+about verification.
+
+**Rejected: deriving a new contact record for the new key.** Simpler to
+implement — no need to touch existing rows — but turns a key change into what
+looks like a second person, losing the conversation history's connection to
+the original contact and giving the user nothing to compare against or be
+warned about.
+
+---
+
+## D-035 — Passphrase protection re-encrypts in place; the OS keystore route is deferred
+**Date:** 2026-08-02 · **Status:** partially implemented — see below
+
+**Decision.** SPEC §7.2 names two acceptable sources for the database key:
+the OS keystore, or Argon2id over a user passphrase. This phase implements
+the second. Turning it on derives a key with the parameters already pinned in
+`keying.rs`, calls SQLCipher's `PRAGMA rekey` so every page is rewritten under
+the new key in one operation, and deletes the placeholder device-key file.
+Which route a given database uses is recorded in a plaintext sidecar file
+beside it (a version byte plus, for the passphrase route, the salt — never
+key material), because that answer has to be readable *before* the encrypted
+database can be opened at all.
+
+**Why a missing passphrase is a hard error, never a silent fallback.** The
+device-file placeholder remains the answer when no sidecar exists, which is
+necessary for every Phase 1 database to keep opening. But once a sidecar
+names the passphrase route, a caller supplying no passphrase gets
+`KeyingError::PassphraseRequired`, not the placeholder key. Falling back
+would silently reopen a database the user was told is passphrase-protected
+under a key that protects against nothing — turning "protected" into "not"
+without saying so anywhere.
+
+**Why the sidecar is written before the rekey, with rollback on failure.**
+`PRAGMA rekey` either completes or the database stays under the old key;
+SQLCipher does not leave it half-migrated. Writing the sidecar first and
+rolling it back on a rekey failure means an error leaves the database exactly
+as openable as it was before the call. The one gap this cannot close is a
+process crash between the sidecar write and the rekey completing — in that
+window the sidecar would claim a passphrase the data does not yet honor. This
+fails as a wrong-key error on the next open, not as silent data exposure,
+which is the failure direction to prefer when only one is available.
+
+**The OS keystore route is not implemented, and that is a stop-and-ask
+(SPEC §2.6), not an oversight.** It requires a real platform dependency —
+Windows Credential Manager or DPAPI, Keychain, Secret Service — chosen and
+wired per platform, which is exactly the kind of decision this project does
+not make while passing through unrelated work. Recorded here so it is not
+mistaken for done.
+
+---
+
+## D-036 — Compression activated for every payload, unconditionally
+**Date:** 2026-08-02 · **Status:** accepted
+
+**Decision.** Manifest stage 3 (`COMPRESSED`) is live. Every payload —
+`Payload::Text` and the `Hello` introduction alike — is compressed with
+`zstd` immediately after JSON encoding and before the single MLS `encrypt`
+call, via one-shot, dictionary-free, stateless calls
+(`api::compression::compress`/`decompress`). No size threshold: everything
+is compressed, always.
+
+**Why no threshold, when the architecture sketch had one.** `docs/ARCHITECTURE.md`
+originally read "text messages below the threshold: not applicable," with no
+number ever assigned anywhere. A threshold means *some* payloads are
+compressed and some are not, which means a receiver has to know which case a
+given blob is before it can decode it — that requires an explicit marker in
+the wire format. Designing that marker is protocol work, not a size
+optimization, and it opens exactly the kind of ambiguous-format question
+SPEC §2.1 treats as a downgrade path to avoid. Compressing unconditionally
+needs no marker, so there is nothing to get wrong. The cost — a two-word
+message can end up a handful of bytes larger than it started, since zstd's
+frame header is not free — is negligible next to MLS's own fixed 128-byte
+padding on every application message regardless.
+
+**Isolation, and why it holds by construction rather than by discipline.**
+SPEC §6.5.2 requires each payload be compressed in isolation — never across
+messages, never mixing user content with protocol fields — because
+compressing attacker-influenced content together with secret content in a
+shared context is the CRIME/BREACH mechanism: vary the attacker's part,
+read the secret's length off the output size. `compress`/`decompress` here
+are one-shot library calls with no dictionary and no encoder object that
+outlives a single call, so there is no shared context for a future change to
+accidentally introduce *unless* it starts holding a compressor across calls
+— which is precisely what `compression_is_isolated_across_calls` asserts
+does not happen, by compressing a fixed "secret" payload before and after
+compressing two different "attacker" payloads and asserting its compressed
+size never moves.
+
+**Why compression breaks wire compatibility with anything sent before this
+commit, and why that is accepted.** `receive_messages` now treats a
+decompression failure exactly like a malformed payload — silently skipped,
+never rendered as a message (matching the project's already-established rule
+that unparseable bytes are protocol noise, not content). A client built
+before this change sends raw, uncompressed JSON; a client built after this
+change will not be able to decompress it and will silently drop it. This
+project has no version negotiation and no live population running mismatched
+builds against each other, so a clean break is the honest choice over adding
+complexity — a version byte, content-sniffing, or a fallback decompression
+attempt — to paper over compatibility this project does not actually need to
+maintain. If that changes, it is worth a decision of its own rather than an
+assumption baked in here.
+
+**What this does not touch.** The attachment pipeline (SPEC §7.1) has no
+compression step in its own spec — strip, pad, encrypt — so this decision
+does not extend there. Padding (stage 4) and sealed sender (stage 6) remain
+not yet implemented; see D-006's note on why neither has an authorizing
+decision. Backup export (SPEC §7.3) is unaffected and still deferred for the
+same reason.
+
+---
+
+## D-037 — A narrow, explicit exception to D-006 for file encryption
+**Date:** 2026-08-02 · **Status:** accepted — project owner approved 2026-08-02
+
+**The problem D-006 leaves unanswered.** A file — a backup, an attachment —
+is not an MLS group message, so it cannot go through `Conversation::encrypt`.
+D-006's rule is "application code never calls an AEAD directly and never
+generates a nonce." Backup export (SPEC §7.3) and the attachment pipeline
+(SPEC §7.1) both require encrypting a file. Something has to give, and it
+should not be decided implicitly by whichever feature gets built first.
+
+**What was checked before proposing anything.** Whether reusing the crypto
+backend already in the dependency graph — rather than adding a new AEAD
+crate — was even possible. It is:
+`openmls_traits::crypto::OpenMlsCrypto::aead_encrypt`/`aead_decrypt` are
+public methods on the same provider `PouchProvider` already wraps, backed in
+`openmls_rust_crypto 0.5.0` by the audited `aes-gcm` crate directly
+(`provider.rs`, `AeadType::Aes128Gcm` arm — unconditionally implemented, not
+gated behind the negotiated MLS ciphersuite). The same provider also exposes
+`hkdf_extract`/`hkdf_expand`. So this decision adds **no new dependency**:
+every primitive it uses is already pinned, already audited, already in this
+binary.
+
+**Decision, approved by the project owner rather than assumed.** File
+encryption uses `PouchProvider`'s own `aead_encrypt`/`aead_decrypt` with
+`AeadType::Aes128Gcm` — the same AEAD the MLS ciphersuite already names, for
+the same reason D-003 gives for not treating AES-128 as something to
+"upgrade" past. The key is:
+
+1. Freshly random, generated with `OsRng`, exactly the width AES-128-GCM
+   needs (16 bytes).
+2. Used for **exactly one** encryption operation, then held only as long as
+   the operation needs it and zeroized after.
+3. Never derived from, or stored alongside, anything else — a backup's key
+   comes from the recovery key via HKDF; an attachment's key is random and
+   travels inside the E2EE payload, per SPEC §7.1 step 6.
+
+**Why a random nonce is safe here despite D-006's stated reason not to pick
+one.** GCM's catastrophic failure mode is reusing a (key, nonce) pair. D-006
+was written for MLS application messages, where the same key persists across
+many messages and picking nonces by hand invites exactly that reuse. Here the
+key exists for one encryption and is discarded — there is no second message
+under this key for a nonce to collide with, so even a *fixed* nonce would be
+safe. A random 96-bit nonce via `OsRng` is used anyway, as ordinary hygiene
+and because it costs nothing.
+
+**What this does not open up.** This is not a general license to call an
+AEAD anywhere convenient. It is scoped to the fresh-key-single-use shape
+above. A future feature that would encrypt more than one thing under the
+same directly-generated key is a new decision, not covered by this one.
+
+**Consequence.** Backup export/import (SPEC §7.3, deferred from Phase 2) and
+the attachment pipeline (SPEC §7.1, Phase 3) are both unblocked. Implemented
+this session: backup export/import. The attachment pipeline's remaining
+work — EXIF/metadata stripping specifically — needs a decision of its own
+about which library handles it and whether it covers video containers (SPEC
+§7.1's own flag), so it is not automatically unblocked by this entry alone.

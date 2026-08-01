@@ -9,7 +9,12 @@
  */
 
 import { describe, expect, it, vi } from "vitest";
-import { asIdentityLabel, asTransportLabel, tauriBridge } from "./bridge";
+import {
+  asIdentityLabel,
+  asRetentionValue,
+  asTransportLabel,
+  tauriBridge,
+} from "./bridge";
 
 describe("asIdentityLabel", () => {
   it("passes through the labels the core actually emits", () => {
@@ -41,6 +46,25 @@ describe("asTransportLabel", () => {
     // Custody Strip for the same reason.
     for (const value of ["", "tor", "ONION", "SECURE", "unknown"]) {
       expect(asTransportLabel(value)).toBe("OFFLINE");
+    }
+  });
+});
+
+describe("asRetentionValue", () => {
+  it("passes through the settings the core actually emits", () => {
+    expect(asRetentionValue("forever")).toBe("forever");
+    expect(asRetentionValue("30d")).toBe("30d");
+    expect(asRetentionValue("7d")).toBe("7d");
+    expect(asRetentionValue("24h")).toBe("24h");
+  });
+
+  it("never rounds towards deleting more than the user chose", () => {
+    // The same failure direction rule as the two above, applied to the setting
+    // whose failure mode is data loss. An interface that cannot tell what the
+    // device is set to must not behave as though a deletion schedule it
+    // invented is in force.
+    for (const value of ["", "1h", "forevermore", "30", "none", "0"]) {
+      expect(asRetentionValue(value)).toBe("forever");
     }
   });
 });

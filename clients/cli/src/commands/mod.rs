@@ -5,7 +5,9 @@
 //! the dispatch table in `main.rs` stays a table rather than growing into a
 //! function.
 
+pub mod backup;
 pub mod contacts;
 pub mod device;
 pub mod identity;
 pub mod messaging;
+pub mod storage;

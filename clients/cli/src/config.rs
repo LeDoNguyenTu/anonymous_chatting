@@ -26,19 +26,37 @@ pub fn relay() -> RelayConfig {
 ///
 /// Returned as an owned buffer because `Pouch` zeroizes it in place.
 ///
-/// **Development-grade only.** An environment variable is readable by other
-/// processes and lands in shell history. The desktop and Android clients take
-/// this from the OS keystore or derive it from a passphrase with Argon2id
-/// (D-007); Phase 2 brings the passphrase path here too.
+/// Three routes, in order:
+///
+/// 1. `POUCH_KEY`, a raw key. **Development-grade only** — an environment
+///    variable is readable by other processes and lands in shell history. It
+///    stays because the automated tests and the demo use it.
+/// 2. Otherwise `keying::unlock`, which reads the sidecar beside the database
+///    and decides. A passphrase-protected database takes `POUCH_PASSPHRASE`.
+/// 3. A database with no sidecar gets the device-file placeholder, which is
+///    what every Phase 1 database used and protects against nothing.
+///
+/// A passphrase-protected database with no passphrase supplied is an error, not
+/// a fall back to the placeholder. Falling back would open a database the user
+/// believes is protected.
 pub fn db_key() -> Result<Vec<u8>> {
-    let hex_key =
-        std::env::var("POUCH_KEY").context("POUCH_KEY is not set; it must be 64 hex characters")?;
-    let key = hex::decode(hex_key.trim()).context("POUCH_KEY must be valid hex")?;
-    if key.len() != 32 {
-        bail!(
-            "POUCH_KEY must be 64 hex characters (32 bytes), not {}",
-            key.len() * 2
-        );
+    if let Ok(hex_key) = std::env::var("POUCH_KEY") {
+        let key = hex::decode(hex_key.trim()).context("POUCH_KEY must be valid hex")?;
+        if key.len() != 32 {
+            bail!(
+                "POUCH_KEY must be 64 hex characters (32 bytes), not {}",
+                key.len() * 2
+            );
+        }
+        return Ok(key);
     }
-    Ok(key)
+
+    let passphrase = std::env::var("POUCH_PASSPHRASE").ok();
+    pouch_core::keying::unlock(&db_path(), passphrase.as_deref())
+        .context("could not obtain the database key")
+}
+
+/// The passphrase supplied for this invocation, if any.
+pub fn passphrase() -> Option<String> {
+    std::env::var("POUCH_PASSPHRASE").ok()
 }
