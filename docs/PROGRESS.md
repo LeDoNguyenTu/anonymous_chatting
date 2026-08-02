@@ -12,11 +12,11 @@ Do not begin a phase before the previous phase meets its exit criteria.
 
 | | |
 |---|---|
-| **Phase complete** | 0 — Foundation · 1 — Working 1:1 encrypted chat · 2 — Storage control and hardening, **fully** |
-| **Phase next** | 3 — Attachments and compression. Meets its exit criteria: compression, backup, and the attachment pipeline (strip images only — D-038, pad, encrypt, upload) are all done in `core`, the CLI, **and the desktop client**. Two things remain, both stated rather than hidden: SPEC §6.7.8's *dedicated pre-send* preview screen is not built (the same manifest information shows *after* sending instead, see below), and offline-queue retry for a failed attachment blob upload was looked at and deliberately not built — see the reasoning in the attachments section below. Neither is part of the phase's own exit criterion. |
-| **Branches** | `main` (repository default) and `develop`, both pushed; `main` intentionally left behind `develop` — see the note in this section's history for why |
-| **Blocked on** | Nothing. What remains for Phase 3 (above) is scoped and intentional, not blocked. Phase 4's Tor-dependent sealed sender is next: this relay's wire protocol already carries no sender field, so the only remaining "who sent this" signal is the TCP/TLS source IP a direct connection necessarily exposes, which only Tor closes. |
-| **Tests** | 134 Rust core + 13 end-to-end + 12 relay + 4 server-blindness = 163 Rust · 36 frontend |
+| **Phase complete** | 0 — Foundation · 1 — Working 1:1 encrypted chat · 2 — Storage control and hardening · 3 — Attachments and compression, all **fully** |
+| **Phase next** | 4 — Tor transport, then sealed sender. **In progress, not complete — Task 1 of 14 done and reviewed clean.** Full implementation plan: `docs/superpowers/plans/2026-08-02-phase-4-tor-and-sealed-sender.md`, executed via `superpowers:subagent-driven-development` in an isolated git worktree — `.worktrees/phase-4-tor/` on branch `phase-4-tor-sealed-sender`, branched from `develop` @ `dd3eaa2`. **Task 1** (pin `arti-client`/`tor-hsservice`/`tor-rtcompat =0.43.0`, D-039) found and resolved a real, verified conflict along the way: `arti-client` unconditionally needs a newer `rusqlite` than this workspace's `=0.32.1` pin (used for the SQLCipher-encrypted local database); resolved by bumping `rusqlite` to `=0.39.0` plus two forced companion bumps (`thiserror`, `serde`) and a small `server/src/store.rs` fix, all verified via the full 163-test suite before being committed — full reasoning in `docs/DECISIONS.md` D-040. **Tasks 2–14 remain**: message-level padding, the Tor-routed `RelayClient`, the relay-as-onion-service, honest per-route sealed-sender reporting, CLI/desktop Tor wiring, the Transport settings screen (SPEC §6.7.9), and phase close-out (threat model, SPEC.md, version bump). **To resume in a new session:** open `.worktrees/phase-4-tor` (or `git checkout phase-4-tor-sealed-sender`, pushed to origin), read the SDD ledger at `.worktrees/phase-4-tor/.superpowers/sdd/2026-08-02-phase-4-tor-and-sealed-sender/progress.md` for exactly which task is next and what's been decided, then continue via `superpowers:subagent-driven-development` against the plan file — the ledger's own resume protocol picks up at the first task without a `complete` line. |
+| **Branches** | `main` (repository default) and `develop`, both pushed; `main` intentionally left behind `develop` — see the note in this section's history for why. `phase-4-tor-sealed-sender` (Phase 4 work in progress, pushed to origin, not yet merged to `develop` — merges via fast-forward once its own final review is clean, per `superpowers:finishing-a-development-branch`) |
+| **Blocked on** | Nothing currently outstanding. Task 1's dependency conflict (above) was found and resolved within the task itself, not left open. |
+| **Tests** | 134 Rust core + 13 end-to-end + 12 relay + 4 server-blindness = 163 Rust · 36 frontend — unchanged by Task 1 (a dependency-pin task adds no new tests; Task 2 onward will move this number) |
 | **CI** | confirmed green via `gh run list` for the Phase 2, initial Phase 3 (compression), and desktop-backup-UI commits. The attachment pipeline commit (core+CLI) and the desktop attachment UI commit are verified locally the same way (fmt, clippy -D warnings, full test suite, both guardrail scripts) but not yet confirmed in Actions at last check — confirm before trusting them the same way. Anything that touches a screen (backup, attachments) has never been seen in a running GUI window — this environment cannot launch the Tauri shell — so "verified" for those means build/typecheck/test only. |
 | **Version** | `0.1.2`, bumped twice this session (`0.1.0` → `0.1.1` → `0.1.2`) per the project owner's instruction to bump after each phase or critical fix (2026-08-02). Four files move together — see `docs/CONTEXT.md`'s conventions list. |
 
@@ -712,6 +712,56 @@ process itself created.
   includes confirming the CSP change above actually lets an attachment
   image render in a real WebView2/WebKitGTK window, not just that it
   typechecks.
+
+---
+
+## Phase 4 — Tor transport, then sealed sender · IN PROGRESS · started 2026-08-02
+
+Not a close-out section — Phase 4 is 1 of 14 planned tasks in, not complete. This
+is here so a session that only reads this file (rather than opening the worktree)
+still knows where things stand and where to find the rest.
+
+**Where the work actually lives.** An isolated git worktree at
+`.worktrees/phase-4-tor/`, on branch `phase-4-tor-sealed-sender` (branched from
+`develop` at `dd3eaa2`, pushed to origin). The full 14-task implementation plan is
+`docs/superpowers/plans/2026-08-02-phase-4-tor-and-sealed-sender.md`, being
+executed task-by-task via `superpowers:subagent-driven-development` — fresh
+implementer subagent per task, independent task review after each, one broad
+review at the end before merging back into `develop`. The SDD ledger at
+`.worktrees/phase-4-tor/.superpowers/sdd/2026-08-02-phase-4-tor-and-sealed-sender/progress.md`
+is the authoritative record of exactly which tasks are done, their commit ranges,
+and any review findings — more current than this section will stay as work
+continues, by design.
+
+**Task 1 — done, reviewed clean.** Pinned `arti-client`/`tor-hsservice`/
+`tor-rtcompat =0.43.0` for the relay-as-onion-service and the client's Tor
+transport (D-039), raising the workspace `rust-version` from `1.82` to `1.89` to
+match. Doing this surfaced a real, structural conflict rather than a theoretical
+one: `arti-client` unconditionally depends on `tor-dirmgr`, which unconditionally
+requires `rusqlite >=0.36.0,<0.40.0` — incompatible with this workspace's
+pre-existing `rusqlite =0.32.1` pin (the crate D-024's "dangerous" silently-
+unencrypted-database incident was about), because both link the native `sqlite3`
+library and Cargo will not resolve two versions of a `links`-declaring crate in
+one graph. Confirmed via the actual Cargo resolver error and crates.io's own
+dependency metadata, not assumed from reading version ranges. Resolved by
+bumping `rusqlite` to `=0.39.0` (same `bundled-sqlcipher` feature, confirmed
+present), which forced two further pins (`thiserror` `2.0.9→2.0.19`, `serde`
+`1.0.216→1.0.225`, both low-risk API-stable crates) and one real code fix
+(`rusqlite 0.39.0` dropped `ToSql` for raw `u64`; three `as i64` casts in
+`server/src/store.rs`, matching the cast pattern `core/src/storage/` already
+used). Verified by the full 163-test suite passing, not just a clean compile —
+full reasoning in `docs/DECISIONS.md` D-040. Task-reviewed: spec compliant,
+approved, zero Critical/Important findings.
+
+**Tasks 2–14 — not started.** Message-level padding (extending the existing
+attachment padding to text messages, D-041), the Tor-routed `RelayClient`
+backend (`arti-client` + `hyper`, since `reqwest` has no custom-connector hook),
+the relay running as an actual onion service (`tor-hsservice`), honest per-route
+sealed-sender reporting in the manifest, CLI and desktop wiring for the new
+transport, the Transport settings screen (SPEC §6.7.9), and the phase close-out
+(threat model update, SPEC.md amendment recording that cover traffic was
+deliberately deferred as a stop-and-ask rather than built — D-042 — and the
+version bump). See the plan file for the exact task-by-task breakdown.
 
 ---
 

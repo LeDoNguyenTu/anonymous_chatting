@@ -150,6 +150,18 @@ message, attachment encryption never touches the MLS ratchet, so a manual
 retry has none of the cost D-028 built the message-retry queue to avoid —
 see `docs/PROGRESS.md`'s Phase 3 section for the full reasoning).
 
+**Phase 4 (Tor transport, then sealed sender) is in progress, not
+complete** — 1 of 14 planned tasks done. The work is happening in an
+isolated worktree, not on this branch directly: `.worktrees/phase-4-tor/`
+on branch `phase-4-tor-sealed-sender` (pushed to origin), driven by the
+plan at `docs/superpowers/plans/2026-08-02-phase-4-tor-and-sealed-sender.md`
+via `superpowers:subagent-driven-development`. Task 1 (pinning
+`arti-client`/`tor-hsservice`/`tor-rtcompat`) surfaced a real dependency
+conflict with the existing `rusqlite` pin, resolved and recorded as D-040 —
+see `docs/PROGRESS.md`'s new Phase 4 section for the summary, or the SDD
+ledger inside the worktree for the exact task-by-task state. **Resume
+there, not by re-planning from scratch.**
+
 163 Rust tests and 36 frontend tests pass, verified locally on Windows; the
 Phase 2, initial-compression, and desktop-backup-UI commits are confirmed
 green via `gh run list`. The attachment pipeline and desktop attachment UI
