@@ -116,6 +116,20 @@ Ordering is security-relevant in two places, and both are load-bearing:
   message are negligible next to MLS's own fixed 128-byte padding on every
   application message regardless.
 
+**An attachment does not travel as one MLS application message.** Stages
+2–4 (strip, pad — compression does not apply, an attachment is already a
+compact binary blob) and encryption still happen, but the *encryption* at
+stage 5 is D-037's fresh-key AEAD, not MLS's. The encrypted blob is
+uploaded on its own, to a freshly generated random relay identifier that
+is not either party's inbox — the same `POST /inbox/{id}` the relay
+already exposes for messages, reusing it rather than adding a new
+endpoint. Only a small reference — where to fetch the blob, the key to
+open it, the filename — travels as an actual MLS application message
+through stages 5–9 as drawn above. This keeps a multi-megabyte file out of
+the same queue slot a text message uses, and means the relay never learns
+which blob belongs to which conversation any more than it already knows
+which inbox a message was filed under.
+
 ## 4. Receive path
 
 Drain inbox → verify AEAD → MLS decrypt → decompress → store to SQLCipher →
