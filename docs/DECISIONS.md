@@ -1149,3 +1149,68 @@ open and unmet until video is supported; the phase gate itself does not.
 pipeline's metadata-stripping step. It is not a general "add an image
 library" precedent — anything that needs to decode or render pixel data
 (rather than edit a container's metadata segments) is a separate choice.
+
+---
+
+## D-039 — `arti` pinned at 0.43.0; workspace `rust-version` raised to 1.89
+**Date:** 2026-08-02 · **Status:** accepted — project owner approved 2026-08-02
+
+**The problem.** Phase 4 needs the Tor Project's own Rust implementation,
+`arti`, to run the relay as a v3 onion service (`tor-hsservice`) and to
+route the client's connection to it through Tor (`arti-client`). Checking
+crates.io metadata (2026-08-02) before pinning anything, as the workspace's
+own convention requires: the newest stable release of both crates,
+0.44.0 (2026-06-30), declares an MSRV of Rust 1.91 — well past this
+workspace's `rust-version = "1.82"` — and its docs.rs build (#3730389)
+failed outright, a caution sign independent of the MSRV question. Walking
+back through recent releases, 0.43.0's MSRV is 1.89 and it last built
+cleanly on docs.rs.
+
+**Decision.** Pin `arti-client = "=0.43.0"` and `tor-hsservice = "=0.43.0"`
+(plus `tor-rtcompat` at the matching version for the tokio runtime glue).
+Raise `rust-version` from `1.82` to `1.89` in both places it is declared
+(root `Cargo.toml` and `clients/desktop/src-tauri/Cargo.toml` — the latter
+sits outside the workspace and does not inherit the former, same reason
+the version-number convention in `docs/CONTEXT.md` calls out four files
+that move together). `tokio = "=1.53.1"`, already pinned, satisfies
+arti-client 0.43.0's own `^1.47.1` requirement without a bump.
+
+**Why this is not a bigger risk than it looks.** CI resolves its toolchain
+via `dtolnay/rust-toolchain@stable` in every job (`.github/workflows/*.yml`),
+not a pinned version, so it already builds with whatever is current —
+raising the declared floor does not risk breaking CI. It only raises what a
+from-source build documents as required, which was always going to move
+for *some* dependency eventually.
+
+**Rejected alternatives.**
+- *Pin an older arti release compatible with 1.82.* Rejected: that means
+  giving up several months of fixes in code whose entire job is anonymity
+  and correctness against a network adversary — the wrong place to save an
+  MSRV bump.
+- *Pin 0.44.0 anyway and bump to 1.91.* Rejected on the docs.rs build
+  failure alone, independent of the larger MSRV jump.
+
+**Scope note, stated rather than assumed away.** `tor-hsservice`'s own
+documentation describes itself as "a low-level implementation... that may
+not be suitable for typical users." Its onion-service-hosting API
+(`launch_onion_service`, `handle_rend_requests`, `StreamRequest`) is not
+behind an `experimental` Cargo feature and ships in the stable 0.43.0
+release, so it is being used through its intended interface per D-001's
+sibling rule against inventing constructions — but it is newer, less
+battle-tested code than `openmls` or `rusqlite`, and that is worth knowing
+rather than treating 0.43.0 as equivalent in maturity to this project's
+other pinned dependencies.
+
+**A related, non-cryptographic architecture consequence recorded here
+because it follows directly from this pin:** `reqwest` (already pinned,
+used by `RelayClient` for the direct-transport path) exposes no hook for a
+custom low-level connector, and `arti-client` 0.43.0 has no in-process SOCKS
+listener of its own — only the separate `arti` CLI binary runs one, which
+would mean shelling out to a subprocess and losing the "audited library
+through its intended interface" property this project holds to. The
+Tor-routed transport therefore is not built as a drop-in swap inside the
+existing `reqwest`-based `RelayClient`; it is a second implementation built
+directly on `hyper`/`hyper-util`, wrapping `TorClient::connect` in a small
+`tower::Service<Uri>` connector — the same low-level primitives the relay
+side needs anyway to bridge incoming onion-service streams into `axum`, so
+this adds one dependency category, not two.
