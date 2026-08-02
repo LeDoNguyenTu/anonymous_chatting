@@ -18,7 +18,7 @@ Do not begin a phase before the previous phase meets its exit criteria.
 | **Blocked on** | Nothing. What remains for Phase 3 (above) is scoped and intentional, not blocked. Phase 4's Tor-dependent sealed sender is next: this relay's wire protocol already carries no sender field, so the only remaining "who sent this" signal is the TCP/TLS source IP a direct connection necessarily exposes, which only Tor closes. |
 | **Tests** | 134 Rust core + 13 end-to-end + 12 relay + 4 server-blindness = 163 Rust · 36 frontend |
 | **CI** | confirmed green via `gh run list` for the Phase 2, initial Phase 3 (compression), and desktop-backup-UI commits. The attachment pipeline commit (core+CLI) and the desktop attachment UI commit are verified locally the same way (fmt, clippy -D warnings, full test suite, both guardrail scripts) but not yet confirmed in Actions at last check — confirm before trusting them the same way. Anything that touches a screen (backup, attachments) has never been seen in a running GUI window — this environment cannot launch the Tauri shell — so "verified" for those means build/typecheck/test only. |
-| **Version** | `0.1.1`, bumped from `0.1.0` this session per the project owner's instruction to bump after each phase or critical fix (2026-08-02). Four files move together — see `docs/CONTEXT.md`'s conventions list. |
+| **Version** | `0.1.2`, bumped twice this session (`0.1.0` → `0.1.1` → `0.1.2`) per the project owner's instruction to bump after each phase or critical fix (2026-08-02). Four files move together — see `docs/CONTEXT.md`'s conventions list. |
 
 ### Owed to the project owner
 
