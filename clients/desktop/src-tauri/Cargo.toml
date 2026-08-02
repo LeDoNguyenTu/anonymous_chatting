@@ -17,6 +17,20 @@ authors = ["Le Do Nguyen Tu"]
 # function signature was picked up and the build stopped compiling. Exact pins
 # on direct dependencies do not constrain the graph beneath them — only a lock
 # file does. See DECISIONS.md D-029.
+#
+# The empty [workspace] table below is a second, independent way of saying
+# "never fold this into an ancestor workspace" — the root Cargo.toml already
+# excludes this path from its own [workspace], but that only stops Cargo's
+# upward directory search at *that* Cargo.toml. It does not stop the search if
+# this crate is reached through a different ancestor entirely, which is
+# exactly what happens when it is checked out inside a nested git worktree
+# (e.g. `.worktrees/<name>/clients/desktop/src-tauri`): Cargo's walk finds the
+# worktree's own excluding Cargo.toml, honours the exclusion, keeps walking
+# past it, and lands on whatever workspace sits above the worktree instead —
+# which does not know this path exists and fails to resolve. An empty
+# [workspace] here stops the walk at this crate unconditionally, regardless
+# of what sits above it.
+[workspace]
 
 [build-dependencies]
 tauri-build = { version = "=2.6.3", features = [] }
@@ -24,7 +38,7 @@ tauri-build = { version = "=2.6.3", features = [] }
 [dependencies]
 pouch-core = { path = "../../../core" }
 tauri = { version = "=2.11.5", features = [] }
-serde = { version = "=1.0.216", features = ["derive"] }
+serde = { version = "=1.0.225", features = ["derive"] }
 serde_json = "=1.0.134"
 tokio = { version = "=1.53.1", features = ["sync"] }
 # Same exact pin the rest of the workspace already uses (root Cargo.toml) for
