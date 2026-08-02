@@ -25,7 +25,8 @@
 - **The Tauri crate does not compile in this environment** (no GTK/WebKitGTK). `cargo build --workspace` (which excludes it) is the compile check for `core`/`server`/`clients/cli`; the desktop crate's own compile check is `cd clients/desktop/src-tauri && cargo check --locked` plus `cd clients/desktop && npm run typecheck && npm test && npm run build`.
 - **A manifest stage is only ever marked `Ran` by the code that actually performed it.** No stage is inferred from an adjacent one. (`core/src/manifest.rs`)
 - **D-039 already recorded** (this session, before this plan): `arti-client`/`tor-hsservice`/`tor-rtcompat` pinned at `=0.43.0`, workspace `rust-version` raised from `1.82` to `1.89`. This plan's Task 1 executes that decision; it does not re-decide it.
-- **Cover traffic is explicitly out of scope for this plan.** SPEC's Phase 4 scope line names "optional cover traffic," but no section of SPEC specifies its shape (frequency, size, triggering), and inventing one now would be exactly the undesigned-construction class of decision SPEC §2.6 reserves for a stop-and-ask. It is not part of Phase 4's exit criteria (SPEC §9's Phase 4 exit lists Tor end-to-end, no client IP in server state, Custody Strip `TOR`, and sealed sender — not cover traffic). Task 14 records this as a deliberate, stated deferral in `docs/DECISIONS.md` and `SPEC.md`, the same way Phase 3 recorded video attachments as deferred rather than silently absent.
+- **D-040, found and resolved during Task 1's first dispatch attempt, before any task in this plan had committed code:** `arti-client =0.43.0` unconditionally requires `tor-dirmgr =0.43.0`, which unconditionally requires `rusqlite >=0.36.0,<0.40.0` — confirmed via crates.io's own dependency metadata, not fixable by any `arti-client` feature selection. This workspace's pre-existing `rusqlite =0.32.1` pin (D-019/D-024) cannot coexist with it (both link the native `sqlite3` library; Cargo hard-blocks two versions of a `links`-declaring crate in one graph). Resolved, verified end-to-end on this exact Windows environment before writing this into the plan: bump `rusqlite` to `=0.39.0` (same `bundled-sqlcipher` feature, confirmed present), which cascades into two more required bumps — `thiserror` `=2.0.9` → `=2.0.19` and `serde` `=1.0.216` → `=1.0.225` (both transitively forced by `arti-client`'s own dependency tree, both routine low-risk bumps of extremely API-stable crates) — plus one real behavioral fix: `rusqlite 0.39.0` dropped its built-in `ToSql` impl for raw `u64`, which breaks three call sites in `server/src/store.rs` that pass `u64` timestamps directly into `params!`. All of this is verified by an actual `cargo check -p pouch-core` (with the new deps temporarily wired in) and a full `cargo test --workspace` — 163/163 passing — not assumed. Task 1 below is written to execute this already-verified fix directly; it does not need to rediscover it.
+- **Cover traffic is explicitly out of scope for this plan.** SPEC's Phase 4 scope line names "optional cover traffic," but no section of SPEC specifies its shape (frequency, size, triggering), and inventing one now would be exactly the undesigned-construction class of decision SPEC §2.6 reserves for a stop-and-ask. It is not part of Phase 4's exit criteria (SPEC §9's Phase 4 exit lists Tor end-to-end, no client IP in server state, Custody Strip `TOR`, and sealed sender — not cover traffic). Task 14 records this as a deliberate, stated deferral in `docs/DECISIONS.md` (D-042) and `SPEC.md`, the same way Phase 3 recorded video attachments as deferred rather than silently absent.
 
 ---
 
@@ -33,8 +34,9 @@
 
 | File | Change |
 |---|---|
-| `Cargo.toml` | New pinned deps, `rust-version` 1.82 → 1.89 |
+| `Cargo.toml` | New pinned deps, `rust-version` 1.82 → 1.89, `rusqlite`/`thiserror`/`serde` bumped (D-040) |
 | `clients/desktop/src-tauri/Cargo.toml` | `rust-version` 1.82 → 1.89 |
+| `server/src/store.rs` | Three `u64` → `i64` casts in `params!` calls, forced by the `rusqlite` bump (D-040) |
 | `core/src/padding.rs` | **New** — moved from `core/src/attachments/padding.rs`, now shared |
 | `core/src/attachments/padding.rs` | **Deleted** (moved) |
 | `core/src/attachments/mod.rs` | `use crate::padding` instead of `mod padding` |
@@ -55,21 +57,25 @@
 | `clients/desktop/src/screens/TransportSettings.tsx` | **New** — SPEC §6.7.9, screen 9 |
 | `clients/desktop/src/screens/PrivacyStorage.tsx` | Link to the new screen |
 | `clients/desktop/src/App.tsx` | Route wiring |
-| `docs/DECISIONS.md` | D-040 (message padding wire break), D-041 (cover traffic deferral) |
+| `docs/DECISIONS.md` | D-040 (rusqlite bump), D-041 (message padding wire break), D-042 (cover traffic deferral) |
 | `docs/THREAT_MODEL.md` | Phase 4 metadata tiers updated |
 | `SPEC.md` | Phase 4 section gets the cover-traffic deferral note, matching Phase 3's pattern |
 | `docs/PROGRESS.md` | Phase 4 section, version bump note |
 
 ---
 
-### Task 1: Pin the Tor/hyper dependencies and raise the MSRV
+### Task 1: Pin the Tor/hyper dependencies, raise the MSRV, and resolve the rusqlite conflict (D-039, D-040)
+
+**This task was attempted once already and hit a real, verified blocker before any task in this plan had committed code — the fix below is not speculative, it was reproduced and the full test suite re-run green on this exact Windows environment before being written here.** `arti-client =0.43.0` unconditionally depends on `tor-dirmgr =0.43.0`, which unconditionally requires `rusqlite >=0.36.0,<0.40.0` — incompatible with this workspace's pre-existing `rusqlite =0.32.1` pin (D-019/D-024) because both link the native `sqlite3` library and Cargo will not resolve two versions of a `links`-declaring crate in one graph. This task now includes the fix: bump `rusqlite`, and the two dependency bumps and one code fix that bumping it forces. See Global Constraints' D-040 entry for the full chain.
 
 **Files:**
 - Modify: `Cargo.toml`
 - Modify: `clients/desktop/src-tauri/Cargo.toml`
+- Modify: `server/src/store.rs`
+- Modify: `docs/DECISIONS.md`
 
 **Interfaces:**
-- Produces: workspace dependencies `arti-client`, `tor-hsservice`, `tor-rtcompat`, `hyper`, `hyper-util`, `http-body-util`, `futures-util`, `http`, `tower-service`, `bytes` (already present transitively but needed direct for `Bytes` construction) available to `core` and `server` via `[workspace.dependencies]`.
+- Produces: workspace dependencies `arti-client`, `tor-hsservice`, `tor-rtcompat`, `hyper`, `hyper-util`, `http-body-util`, `futures-util`, `http`, `tower-service`, `bytes` available to `core` and `server` via `[workspace.dependencies]`. `rusqlite` moves from `=0.32.1` to `=0.39.0`, `thiserror` from `=2.0.9` to `=2.0.19`, `serde` from `=1.0.216` to `=1.0.225` — all workspace-wide, all already-pinned dependencies moving to a new pinned version, not new dependencies.
 
 - [ ] **Step 1: Raise `rust-version` in both places**
 
@@ -83,7 +89,82 @@ rust-version = "1.89"
 
 In `clients/desktop/src-tauri/Cargo.toml`, find the `rust-version = "1.82"` line and change it to `rust-version = "1.89"` (this crate is excluded from the workspace and does not inherit the value above — same reason the version-number convention names four files that move together).
 
-- [ ] **Step 2: Add the pinned dependencies to `[workspace.dependencies]`**
+- [ ] **Step 2: Bump `rusqlite`, `thiserror`, and `serde` in `Cargo.toml`**
+
+Change these three existing lines (they are not adjacent to each other in the file — `rusqlite` is under `# --- storage ---`, `serde`/`thiserror` are under `# --- plumbing ---`):
+
+```toml
+rusqlite = { version = "=0.39.0", features = ["bundled-sqlcipher"] }
+```
+```toml
+serde = { version = "=1.0.225", features = ["derive"] }
+```
+```toml
+thiserror = "=2.0.19"
+```
+
+Add a comment immediately above the `rusqlite` line (above the existing block explaining why there is one `rusqlite` entry for the whole workspace — keep that existing comment, add this one after it):
+
+```toml
+# Bumped from 0.32.1 to 0.39.0 for Phase 4 — arti-client's tor-dirmgr
+# component requires rusqlite >=0.36.0,<0.40.0 and the two cannot coexist as
+# separate versions (both link the native sqlite3 library). See D-040.
+# `bundled-sqlcipher` is confirmed still present at 0.39.0. This forces the
+# thiserror and serde bumps below via arti-client's own transitive tree, and
+# requires three `as i64` casts in server/src/store.rs — see D-040 for why.
+```
+
+- [ ] **Step 3: Fix the three `u64` call sites in `server/src/store.rs`**
+
+`rusqlite 0.39.0` no longer implements `ToSql` for raw `u64` (SQLite's native integer is signed 64-bit; the crate now requires an explicit cast rather than silently reinterpreting). `core/src/storage/` already casts explicitly everywhere it passes a `u64` timestamp (e.g. `params![seconds.map(|s| s as i64), conversation_id]` in `core/src/storage/settings.rs`) — `server/src/store.rs` is the only place in the workspace that does not yet, because it never needed to before this bump.
+
+Change:
+```rust
+        self.conn.execute(
+            "INSERT INTO queue (message_id, inbox_id, blob, expires_at) VALUES (?1, ?2, ?3, ?4)",
+            params![message_id, inbox_id, blob, expires_at],
+        )?;
+```
+to:
+```rust
+        self.conn.execute(
+            "INSERT INTO queue (message_id, inbox_id, blob, expires_at) VALUES (?1, ?2, ?3, ?4)",
+            params![message_id, inbox_id, blob, expires_at as i64],
+        )?;
+```
+
+Change:
+```rust
+        let rows = stmt.query_map(params![inbox_id, now()], |row| {
+```
+to:
+```rust
+        let rows = stmt.query_map(params![inbox_id, now() as i64], |row| {
+```
+
+Change:
+```rust
+    pub fn sweep_expired(&self) -> Result<usize, StoreError> {
+        Ok(self
+            .conn
+            .execute("DELETE FROM queue WHERE expires_at <= ?1", params![now()])?)
+    }
+```
+to:
+```rust
+    pub fn sweep_expired(&self) -> Result<usize, StoreError> {
+        Ok(self
+            .conn
+            .execute(
+                "DELETE FROM queue WHERE expires_at <= ?1",
+                params![now() as i64],
+            )?)
+    }
+```
+
+These three are exhaustive for this file — `expires_at`/`now()` (both `u64`) are the only raw-`u64`-into-`params!` sites in `server/src/store.rs`. `Store::len`'s `COUNT(*)` result is read via `row.get(0)` into an `i64` already (`let n: i64 = ...`), not written, so it is unaffected.
+
+- [ ] **Step 4: Add the pinned Tor/hyper dependencies to `[workspace.dependencies]`**
 
 Append to `Cargo.toml` after the existing `# --- transport / server ---` block:
 
@@ -112,27 +193,119 @@ http-body-util = "=0.1.4"
 futures-util = "=0.3.33"
 http = "=1.5.0"
 tower-service = "=0.3.3"
-bytes = "=1.10.1"
+bytes = "=1.12.1"
 ```
 
-Before finalizing the `bytes` line, run `cargo tree -p pouch-core -e normal | grep bytes` after Step 3 below to confirm the actual resolved transitive version (it is already in the graph via `axum`/`reqwest`), and adjust the pinned `=` version to match exactly if it differs from `1.10.1` — the goal is one resolved version, not a second copy.
+(`bytes = "=1.12.1"` — already verified against the real resolved graph, not a placeholder to double check; if a later `cargo tree` shows a different resolved version at implementation time, the graph has moved since this plan was written and the pin should track whatever is actually resolved, same principle as before.)
 
-- [ ] **Step 3: Smoke-check the dependency graph resolves and compiles**
+- [ ] **Step 5: Verify the fix resolves the arti-client/rusqlite conflict for real**
 
-Run: `cargo check --workspace --locked 2>&1 | head -80` from the repository root (note: `--locked` will fail the first time since `Cargo.lock` has not been updated yet — run `cargo check --workspace` once without `--locked` first to update the lock file, inspect `git diff Cargo.lock` for anything unexpected pulling in a telemetry/analytics crate per SPEC §2.6, then re-run with `--locked` to confirm it is now stable).
+`[workspace.dependencies]` entries are inert until a member's own `[dependencies]` table references them — adding them alone will not exercise the fix. Temporarily wire all ten new entries into `core/Cargo.toml`'s `[dependencies]` (each as `name.workspace = true`, marked with a `// TEMPORARY — reverted before commit, real wiring is later tasks' job` comment), then:
 
-Expected: compiles with only new-dependency-graph output, no errors. If `arti-client`'s feature flags produce an error naming a different feature name than `onion-service-service`, check `https://docs.rs/arti-client/0.43.0/arti_client/` for the exact name at that version before changing it — do not guess.
+Run: `cargo check -p pouch-core 2>&1 | tail -80`
+Expected: `Finished` — no `libsqlite3-sys`/`links` conflict, no `thiserror`/`serde_derive` version-selection failure. If any error appears, it means the graph has shifted since this plan was verified (e.g. a newer arti-client patch release changed a transitive requirement) — investigate via crates.io's `/api/v1/crates/<name>/<version>/dependencies` endpoint for the actual conflicting package pair, the same way this conflict was originally found, rather than guessing at version numbers.
 
-- [ ] **Step 4: Run the existing test suite to confirm nothing broke**
+Run: `cargo test --workspace 2>&1 | tail -60`
+Expected: **163 passed, 0 failed** — the same count as the baseline before this task. Pay particular attention to the SQLCipher-dependent tests (`a_passphrase_re_encrypts_the_database_and_the_old_key_stops_working` and anything in `core/src/storage/`) — these are what would catch a real behavioral break from the `rusqlite` bump, as opposed to a mere compile error. (SQLCipher's own C library prints `WARN MEMORY sqlcipher_mlock: VirtualLock() returned 0 LastError=1453` and, inside the wrong-key test specifically, `ERROR CORE sqlcipher_page_cipher: hmac check failed` to stderr during a normal, passing run on Windows — both are expected noise from SQLCipher itself, not a failure; the test result line is what matters.)
 
-Run: `cargo test --workspace 2>&1 | tail -30`
-Expected: same pass count as before this task (163 Rust tests going in). Adding dependencies with no code using them yet must not change behavior.
+Then revert only the temporary `core/Cargo.toml` wiring (`git checkout -- core/Cargo.toml`) — the real wiring into `core` happens in Task 5+6. Confirm `git diff core/Cargo.toml` is empty afterward.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Record D-040 in `docs/DECISIONS.md`**
+
+Read the tail of `docs/DECISIONS.md` first (D-039 is the last entry) and append:
+
+```markdown
+---
+
+## D-040 — `rusqlite` bumped 0.32.1 → 0.39.0 to resolve an arti-client conflict; two forced companion bumps
+**Date:** 2026-08-02 · **Status:** accepted — project owner approved 2026-08-02
+
+**The problem, found while executing D-039.** `arti-client =0.43.0`
+unconditionally depends on `tor-dirmgr =0.43.0` (needed to fetch and cache
+the Tor consensus — required to build *any* circuit, not only onion
+services), which unconditionally requires `rusqlite >=0.36.0,<0.40.0`,
+confirmed via crates.io's own dependency metadata (`optional: false`, no
+feature gate on either side — `tor-dirmgr`'s `static` feature only controls
+whether SQLite is bundled, not whether the dependency exists). This
+workspace's `rusqlite = "=0.32.1"` pin, in place since Phase 0/1 for the
+SQLCipher-encrypted local database and the relay's own store (D-019,
+D-024), cannot coexist with that range: both ultimately link the native
+`sqlite3` library through `libsqlite3-sys`, and Cargo hard-blocks two
+versions of a `links`-declaring crate in one build graph — not a version
+negotiation, a wall. Confirmed with the actual Cargo resolver error before
+concluding anything, not assumed from reading version ranges alone.
+
+**Decision.** Bump the workspace `rusqlite` pin to `=0.39.0` — inside
+`tor-dirmgr`'s required range, the newest 0.3x release, still ships
+`bundled-sqlcipher` (confirmed on crates.io before choosing it, same
+diligence D-038 applied to `img-parts`). This is the crate D-024's incident
+was about, so it was not changed without real verification: reproduced the
+conflict, applied the bump, and ran the **full existing test suite (163
+tests) to completion, green**, including the SQLCipher-specific tests (wrong
+key correctly refused, passphrase re-encryption, the runtime
+`PRAGMA cipher_version` guard) — not just a clean compile. Verified on the
+project's own Windows development environment, where SQLCipher/OpenSSL
+linkage has caused problems before (`docs/PROGRESS.md`'s Windows build
+notes).
+
+**Two forced companion bumps, both low-risk.** `rusqlite 0.39.0`'s own
+dependency tree (via a `sqlite-wasm-rs` entry, present regardless of target)
+requires `thiserror ^2.0.12`; separately, `arti-client`'s `tor-config` →
+`toml 1.0.3` chain requires `serde_core ^1.0.225`, which forces the paired
+`serde_derive` to the same version as `serde` itself. Bumped
+`thiserror = "=2.0.9"` → `"=2.0.19"` and `serde = "=1.0.216"` → `"=1.0.225"`.
+Neither is a security-relevant crate in the way `rusqlite` is; both are
+widely used, API-stable derive/error crates, and the full test suite passing
+after both bumps is the real evidence, not an assumption that "minor version
+bumps of popular crates are usually fine."
+
+**One forced code fix, not a design change.** `rusqlite 0.39.0` dropped its
+built-in `ToSql` implementation for raw `u64` — SQLite's native integer type
+is signed 64-bit, and the crate now requires an explicit cast rather than
+silently reinterpreting a `u64` as `i64`. `core/src/storage/` already cast
+explicitly everywhere (`as i64`) before this bump; `server/src/store.rs` had
+three call sites that did not, because they never needed to before. Fixed
+with the same `as i64` cast pattern already established in `core` — every
+value involved is a Unix timestamp or an expiry bucket, nowhere near
+`i64::MAX`, so the cast is lossless for every realistic input.
+
+**Rejected alternatives.**
+- *Restructure Tor networking behind a separate OS process, avoiding the
+  `rusqlite` conflict entirely by never linking `arti-client` into the same
+  binary as `core`.* Rejected for this decision specifically (though see the
+  note below): the `links` conflict applies to whatever gets linked into one
+  final binary, not to Cargo workspace or lockfile boundaries — if the same
+  executable still needs both `pouch-core` and an arti-wrapping crate as
+  direct or transitive Rust dependencies, the conflict recurs regardless of
+  which workspace member each lives in. A real fix along these lines would
+  need an actual IPC boundary between two OS processes, which is a
+  substantially larger architecture change than a dependency version bump,
+  and was not what was being decided here.
+- *Switch to the system `tor` daemon via its ControlPort instead of
+  `arti-client`.* A legitimate, more involved alternative — sidesteps the
+  Rust dependency graph entirely — but SPEC §3.2 names `arti` explicitly for
+  Phase 4 transport, so this would be a SPEC.md amendment, not a dependency
+  pin change, and a substantially larger rewrite of this plan's remaining
+  tasks. Not chosen; recorded here so it is not silently forgotten as an
+  option if `arti-client` causes further friction later in this phase.
+
+**What this does not open up.** This is a version bump of an
+already-audited, already-relied-upon crate, verified by the same test suite
+that already exists for it — not a new trust decision about SQLCipher or
+about how the local database is protected. D-019 and D-024's reasoning is
+otherwise unchanged.
+```
+
+- [ ] **Step 7: Run the full verification one more time on the final diff**
+
+Run: `cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace 2>&1 | tail -60`
+Expected: all clean, 163 passed, 0 failed. (`core/Cargo.toml` should show no diff at all at this point — confirm with `git diff --stat core/Cargo.toml` before committing.)
+
+- [ ] **Step 8: Commit**
 
 ```bash
-git add Cargo.toml Cargo.lock clients/desktop/src-tauri/Cargo.toml
-git commit -m "Pin arti/hyper dependencies for Phase 4, raise MSRV to 1.89 (D-039)"
+git add Cargo.toml Cargo.lock clients/desktop/src-tauri/Cargo.toml server/src/store.rs docs/DECISIONS.md
+git commit -m "Pin arti/hyper dependencies for Phase 4; bump rusqlite/thiserror/serde to resolve a real conflict (D-039, D-040)"
 ```
 
 ---
@@ -375,7 +548,7 @@ git commit -m "Manifest: message padding starts Pending, add honest per-route se
 
 **Files:**
 - Modify: `core/src/api/messaging.rs`
-- Create: entry in `docs/DECISIONS.md` (D-040)
+- Create: entry in `docs/DECISIONS.md` (D-041)
 
 **Interfaces:**
 - Consumes: `crate::padding::pad`/`crate::padding::unpad` (Task 2), `Manifest::padded` (pre-existing).
@@ -549,12 +722,12 @@ Expected: all pass. If any existing end-to-end test fails on a decrypt/decompres
 
 - [ ] **Step 8: Record the wire-format break in `docs/DECISIONS.md`**
 
-Read the tail of `docs/DECISIONS.md` first (D-039 is the last entry after this session's earlier work) and append:
+Read the tail of `docs/DECISIONS.md` first (D-040 is the last entry after Task 1) and append:
 
 ```markdown
 ---
 
-## D-040 — Fixed-size padding extended to message payloads; wire-format break
+## D-041 — Fixed-size padding extended to message payloads; wire-format break
 **Date:** 2026-08-02 · **Status:** accepted
 
 **Decision.** `core/src/padding.rs`'s fixed buckets (64 KB/256 KB/1 MB/4 MB/
@@ -596,7 +769,7 @@ session (see the relocation itself, a mechanical move with no logic change).
 
 ```bash
 git add core/src/api/messaging.rs docs/DECISIONS.md
-git commit -m "Pad message payloads before encryption, unpad after decryption (D-040)"
+git commit -m "Pad message payloads before encryption, unpad after decryption (D-041)"
 ```
 
 ---
@@ -2650,21 +2823,21 @@ Note the new Rust and frontend test totals (starting point was 163 Rust / 36 fro
 ### Task 14: Documentation close-out — decisions, threat model, SPEC, progress, version bump
 
 **Files:**
-- Modify: `docs/DECISIONS.md` (D-041)
+- Modify: `docs/DECISIONS.md` (D-042)
 - Modify: `docs/THREAT_MODEL.md`
 - Modify: `SPEC.md`
 - Modify: `docs/PROGRESS.md`
 - Modify: `docs/CONTEXT.md`
 - Modify: `Cargo.toml`, `clients/desktop/src-tauri/Cargo.toml`, `clients/desktop/src-tauri/tauri.conf.json`, `clients/desktop/package.json` (version bump)
 
-- [ ] **Step 1: Record the cover-traffic deferral (D-041)**
+- [ ] **Step 1: Record the cover-traffic deferral (D-042)**
 
 Append to `docs/DECISIONS.md`:
 
 ```markdown
 ---
 
-## D-041 — Cover traffic not built this phase; deferred as a stop-and-ask
+## D-042 — Cover traffic not built this phase; deferred as a stop-and-ask
 **Date:** 2026-08-02 · **Status:** accepted
 
 SPEC's Phase 4 scope line names "optional cover traffic" alongside fixed-
@@ -2699,7 +2872,7 @@ Find the Phase 4 section (already read during planning, at the point starting `#
 
 ```markdown
 **Cover traffic, named in this phase's scope line above, is not part of
-its exit criteria and was not built** — decided 2026-08-02, D-041. SPEC
+its exit criteria and was not built** — decided 2026-08-02, D-042. SPEC
 does not specify its shape (frequency, size, trigger), and inventing one
 without that specification would be the same class of undesignated
 construction SPEC §2.6 reserves for a stop-and-ask. Tracked as an open
@@ -2713,7 +2886,7 @@ Following the existing document's structure (a "Current position" table at the t
 - The "Current position" table: `Phase complete` gains `· 3 — Attachments and compression, fully · 4 — Tor transport and sealed sender`; `Phase next` becomes `5 — Android client`, or if any of this plan's manual-verification items (Tasks 6/9/10 Step 7/8) could not actually be run against live Tor in the implementing session, say so explicitly here rather than marking the phase complete prematurely — mirror the existing honesty pattern ("CI green... not yet confirmed" language already used for the attachment pipeline in the same file).
 - `Tests` row: update counts using Task 13's recorded totals.
 - `Version` row: update per Step 6 below.
-- Add a new `## Phase 4 — Tor transport, then sealed sender` section, following the structure of the existing Phase 3 section: what shipped (relay onion service, Tor-routed `RelayClient`, message padding, sealed-sender manifest activation, Transport settings screen), what was decided (D-039, D-040, D-041, cross-referenced), the manual verification results actually obtained (paste the real onion address and timing from Task 9 Step 7, the real CLI-over-Tor demo output from Task 10 Step 4, and the real `--ignored` test result from Task 6 Step 7 — not placeholder text; if a step could not be run in the implementing environment, state that plainly, matching this project's existing standard for admitting an unverified GUI claim), and what remains open (cover traffic, per D-041; anything else discovered during implementation that does not block the phase's own exit criteria).
+- Add a new `## Phase 4 — Tor transport, then sealed sender` section, following the structure of the existing Phase 3 section: what shipped (relay onion service, Tor-routed `RelayClient`, message padding, sealed-sender manifest activation, Transport settings screen), what was decided (D-039 arti/MSRV, D-040 the rusqlite conflict and its fix, D-041 message padding, D-042 cover traffic deferred — all cross-referenced), the manual verification results actually obtained (paste the real onion address and timing from Task 9 Step 7, the real CLI-over-Tor demo output from Task 10 Step 4, and the real `--ignored` test result from Task 6 Step 7 — not placeholder text; if a step could not be run in the implementing environment, state that plainly, matching this project's existing standard for admitting an unverified GUI claim), and what remains open (cover traffic, per D-042; anything else discovered during implementation that does not block the phase's own exit criteria).
 
 - [ ] **Step 5: Update `docs/CONTEXT.md`'s "Where things stand" section**
 
@@ -2733,7 +2906,7 @@ Run `cargo check --workspace --locked 2>&1 | tail -40` afterward to confirm the 
 
 ```bash
 git add docs/DECISIONS.md docs/THREAT_MODEL.md SPEC.md docs/PROGRESS.md docs/CONTEXT.md Cargo.toml Cargo.lock clients/desktop/src-tauri/Cargo.toml clients/desktop/src-tauri/tauri.conf.json clients/desktop/package.json
-git commit -m "Phase 4 close-out: threat model, SPEC, progress log, cover-traffic deferral (D-041), version bump"
+git commit -m "Phase 4 close-out: threat model, SPEC, progress log, cover-traffic deferral (D-042), version bump"
 ```
 
 - [ ] **Step 8: Push**
@@ -2747,7 +2920,7 @@ git push origin develop
 
 ## Self-Review Notes
 
-**Spec coverage check**, against SPEC §9's Phase 4 paragraph and exit criteria: relay as onion service (Task 9) ✓; `arti` embedded in core (Tasks 5–7) ✓; transport settings screen (Task 12) ✓; fixed-size padding (Tasks 3–4, extending the existing attachment padding rather than duplicating it) ✓; cover traffic — deliberately not built, recorded as D-041 rather than silently skipped (Task 14) ✓; threat model updated (Task 14) ✓; messaging works end to end over Tor — Task 10's manual demo, Task 6/9's live-network tests ✓; server state confirmed to contain no client IP — the relay's schema already has no IP column (Task 10 Step 4 cross-checks this rather than re-proving it from scratch) ✓; Custody Strip shows `TOR` accurately — already true structurally once `Pouch::transport_state()` reports the real route (Task 7); the Custody Strip component itself reads `transportState()` and already narrows correctly per `asTransportLabel` in `bridge.ts`, so no separate task was needed for the Custody Strip specifically — confirmed by reading `bridge.ts` during planning ✓; manifest stage 6 reports ran — Tasks 3, 7 ✓.
+**Spec coverage check**, against SPEC §9's Phase 4 paragraph and exit criteria: relay as onion service (Task 9) ✓; `arti` embedded in core (Tasks 5–7) ✓; transport settings screen (Task 12) ✓; fixed-size padding (Tasks 3–4, extending the existing attachment padding rather than duplicating it) ✓; cover traffic — deliberately not built, recorded as D-042 rather than silently skipped (Task 14) ✓; threat model updated (Task 14) ✓; messaging works end to end over Tor — Task 10's manual demo, Task 6/9's live-network tests ✓; server state confirmed to contain no client IP — the relay's schema already has no IP column (Task 10 Step 4 cross-checks this rather than re-proving it from scratch) ✓; Custody Strip shows `TOR` accurately — already true structurally once `Pouch::transport_state()` reports the real route (Task 7); the Custody Strip component itself reads `transportState()` and already narrows correctly per `asTransportLabel` in `bridge.ts`, so no separate task was needed for the Custody Strip specifically — confirmed by reading `bridge.ts` during planning ✓; manifest stage 6 reports ran — Tasks 3, 7 ✓.
 
 **Type/signature consistency check**: `RelayClient::route()` (Task 5) is what Task 7's `Pouch::current_route`, Task 3/7's `manifest.sealed(route)`/`manifest.routed(route, ...)`, and Task 8's `RelayVisibility::for_message(..., route)` all consume — one accessor, four call sites, same type (`Route`) throughout. `TorRelayConfig` is defined once in `core/src/transport/tor.rs` (Task 6) and consumed by `Pouch::connect_tor` (Task 7), the CLI's `tor_config()` (Task 10), and the desktop `connect_tor` command (Task 11) — no divergent field names introduced at any call site (all three construct `{ onion_host, onion_port, state_dir }`).
 

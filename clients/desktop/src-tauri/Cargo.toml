@@ -3,7 +3,7 @@ name = "pouch-desktop"
 description = "Pouch desktop shell. Hosts the webview and bridges it to pouch-core."
 version = "0.1.2"
 edition = "2021"
-rust-version = "1.82"
+rust-version = "1.89"
 license = "AGPL-3.0-or-later"
 authors = ["Le Do Nguyen Tu"]
 

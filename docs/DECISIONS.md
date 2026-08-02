@@ -1214,3 +1214,83 @@ directly on `hyper`/`hyper-util`, wrapping `TorClient::connect` in a small
 `tower::Service<Uri>` connector — the same low-level primitives the relay
 side needs anyway to bridge incoming onion-service streams into `axum`, so
 this adds one dependency category, not two.
+
+---
+
+## D-040 — `rusqlite` bumped 0.32.1 → 0.39.0 to resolve an arti-client conflict; two forced companion bumps
+**Date:** 2026-08-02 · **Status:** accepted — project owner approved 2026-08-02
+
+**The problem, found while executing D-039.** `arti-client =0.43.0`
+unconditionally depends on `tor-dirmgr =0.43.0` (needed to fetch and cache
+the Tor consensus — required to build *any* circuit, not only onion
+services), which unconditionally requires `rusqlite >=0.36.0,<0.40.0`,
+confirmed via crates.io's own dependency metadata (`optional: false`, no
+feature gate on either side — `tor-dirmgr`'s `static` feature only controls
+whether SQLite is bundled, not whether the dependency exists). This
+workspace's `rusqlite = "=0.32.1"` pin, in place since Phase 0/1 for the
+SQLCipher-encrypted local database and the relay's own store (D-019,
+D-024), cannot coexist with that range: both ultimately link the native
+`sqlite3` library through `libsqlite3-sys`, and Cargo hard-blocks two
+versions of a `links`-declaring crate in one build graph — not a version
+negotiation, a wall. Confirmed with the actual Cargo resolver error before
+concluding anything, not assumed from reading version ranges alone.
+
+**Decision.** Bump the workspace `rusqlite` pin to `=0.39.0` — inside
+`tor-dirmgr`'s required range, the newest 0.3x release, still ships
+`bundled-sqlcipher` (confirmed on crates.io before choosing it, same
+diligence D-038 applied to `img-parts`). This is the crate D-024's incident
+was about, so it was not changed without real verification: reproduced the
+conflict, applied the bump, and ran the **full existing test suite (163
+tests) to completion, green**, including the SQLCipher-specific tests (wrong
+key correctly refused, passphrase re-encryption, the runtime
+`PRAGMA cipher_version` guard) — not just a clean compile. Verified on the
+project's own Windows development environment, where SQLCipher/OpenSSL
+linkage has caused problems before (`docs/PROGRESS.md`'s Windows build
+notes).
+
+**Two forced companion bumps, both low-risk.** `rusqlite 0.39.0`'s own
+dependency tree (via a `sqlite-wasm-rs` entry, present regardless of target)
+requires `thiserror ^2.0.12`; separately, `arti-client`'s `tor-config` →
+`toml 1.0.3` chain requires `serde_core ^1.0.225`, which forces the paired
+`serde_derive` to the same version as `serde` itself. Bumped
+`thiserror = "=2.0.9"` → `"=2.0.19"` and `serde = "=1.0.216"` → `"=1.0.225"`.
+Neither is a security-relevant crate in the way `rusqlite` is; both are
+widely used, API-stable derive/error crates, and the full test suite passing
+after both bumps is the real evidence, not an assumption that "minor version
+bumps of popular crates are usually fine."
+
+**One forced code fix, not a design change.** `rusqlite 0.39.0` dropped its
+built-in `ToSql` implementation for raw `u64` — SQLite's native integer type
+is signed 64-bit, and the crate now requires an explicit cast rather than
+silently reinterpreting a `u64` as `i64`. `core/src/storage/` already cast
+explicitly everywhere (`as i64`) before this bump; `server/src/store.rs` had
+three call sites that did not, because they never needed to before. Fixed
+with the same `as i64` cast pattern already established in `core` — every
+value involved is a Unix timestamp or an expiry bucket, nowhere near
+`i64::MAX`, so the cast is lossless for every realistic input.
+
+**Rejected alternatives.**
+- *Restructure Tor networking behind a separate OS process, avoiding the
+  `rusqlite` conflict entirely by never linking `arti-client` into the same
+  binary as `core`.* Rejected for this decision specifically (though see the
+  note below): the `links` conflict applies to whatever gets linked into one
+  final binary, not to Cargo workspace or lockfile boundaries — if the same
+  executable still needs both `pouch-core` and an arti-wrapping crate as
+  direct or transitive Rust dependencies, the conflict recurs regardless of
+  which workspace member each lives in. A real fix along these lines would
+  need an actual IPC boundary between two OS processes, which is a
+  substantially larger architecture change than a dependency version bump,
+  and was not what was being decided here.
+- *Switch to the system `tor` daemon via its ControlPort instead of
+  `arti-client`.* A legitimate, more involved alternative — sidesteps the
+  Rust dependency graph entirely — but SPEC §3.2 names `arti` explicitly for
+  Phase 4 transport, so this would be a SPEC.md amendment, not a dependency
+  pin change, and a substantially larger rewrite of this plan's remaining
+  tasks. Not chosen; recorded here so it is not silently forgotten as an
+  option if `arti-client` causes further friction later in this phase.
+
+**What this does not open up.** This is a version bump of an
+already-audited, already-relied-upon crate, verified by the same test suite
+that already exists for it — not a new trust decision about SQLCipher or
+about how the local database is protected. D-019 and D-024's reasoning is
+otherwise unchanged.

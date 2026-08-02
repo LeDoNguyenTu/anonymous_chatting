@@ -115,7 +115,7 @@ impl Store {
 
         self.conn.execute(
             "INSERT INTO queue (message_id, inbox_id, blob, expires_at) VALUES (?1, ?2, ?3, ?4)",
-            params![message_id, inbox_id, blob, expires_at],
+            params![message_id, inbox_id, blob, expires_at as i64],
         )?;
 
         Ok(message_id)
@@ -140,7 +140,7 @@ impl Store {
              ORDER BY message_id",
         )?;
 
-        let rows = stmt.query_map(params![inbox_id, now()], |row| {
+        let rows = stmt.query_map(params![inbox_id, now() as i64], |row| {
             Ok(QueuedMessage {
                 message_id: row.get(0)?,
                 blob: row.get(1)?,
@@ -174,9 +174,10 @@ impl Store {
 
     /// Erases everything past its TTL. Returns how many blobs went.
     pub fn sweep_expired(&self) -> Result<usize, StoreError> {
-        Ok(self
-            .conn
-            .execute("DELETE FROM queue WHERE expires_at <= ?1", params![now()])?)
+        Ok(self.conn.execute(
+            "DELETE FROM queue WHERE expires_at <= ?1",
+            params![now() as i64],
+        )?)
     }
 
     /// Number of blobs currently held. For tests and operator diagnostics; not
