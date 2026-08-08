@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 use pouch_core::Pouch;
 
-use crate::config::{db_key, db_path, relay};
+use crate::config::{db_key, db_path, open_for_relay, relay};
 
 /// `pouch-cli add <name> <invite-code>`
 pub async fn add(args: &[String]) -> Result<()> {
@@ -13,8 +13,7 @@ pub async fn add(args: &[String]) -> Result<()> {
     let code = args
         .get(2)
         .context("usage: pouch-cli add <name> <invite-code>")?;
-    let mut key = db_key()?;
-    let mut pouch = Pouch::open(&db_path(), &mut key, relay())?;
+    let mut pouch = open_for_relay().await?;
     let conversation = pouch.add_contact(name, code).await?;
     println!("conversation {conversation}");
     println!();

@@ -50,6 +50,43 @@ pub struct TorRelayConfig {
     pub state_dir: String,
 }
 
+impl TorRelayConfig {
+    /// Reads a Tor target from the environment, or `None` if none is set.
+    ///
+    /// This lives in the core rather than in each client so the three
+    /// variable names below are defined exactly once. Two clients spelling
+    /// them separately is two chances to drift, and a client reading
+    /// `POUCH_TOR_ONION` while the relay operator sets
+    /// `POUCH_RELAY_TOR_ONION` fails by silently staying on the direct
+    /// route — the failure mode this project keeps having to design out.
+    ///
+    /// The library never calls this itself. A host application decides
+    /// whether its deployment takes configuration from the environment at
+    /// all; the core only offers one definition of what those names are.
+    ///
+    /// - `POUCH_RELAY_TOR_ONION` — the relay's onion address, no scheme or
+    ///   port. Its presence is the switch: set means route over Tor.
+    /// - `POUCH_RELAY_TOR_PORT` — the port, default 80.
+    /// - `POUCH_TOR_STATE_DIR` — where Tor state persists. Unset falls back
+    ///   to `default_state_dir`, which the caller owns: a CLI wants the
+    ///   working directory, a desktop app wants its own data directory, and
+    ///   neither answer belongs in a library.
+    pub fn from_env(default_state_dir: &str) -> Option<Self> {
+        let onion_host = std::env::var("POUCH_RELAY_TOR_ONION").ok()?;
+        let onion_port = std::env::var("POUCH_RELAY_TOR_PORT")
+            .ok()
+            .and_then(|p| p.parse().ok())
+            .unwrap_or(80);
+        let state_dir =
+            std::env::var("POUCH_TOR_STATE_DIR").unwrap_or_else(|_| default_state_dir.to_string());
+        Some(Self {
+            onion_host,
+            onion_port,
+            state_dir,
+        })
+    }
+}
+
 /// A Tor circuit, dressed as something `hyper_util`'s pooling client accepts.
 ///
 /// `hyper_util` requires a connector's output to implement its `Connection`
@@ -354,6 +391,46 @@ impl TorBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Environment variables are process-global, so these three cases share
+    /// one test rather than racing each other across threads.
+    #[test]
+    fn from_env_treats_the_onion_address_as_the_switch() {
+        // Nothing set: no Tor, whatever the other two say.
+        std::env::remove_var("POUCH_RELAY_TOR_ONION");
+        std::env::remove_var("POUCH_RELAY_TOR_PORT");
+        std::env::remove_var("POUCH_TOR_STATE_DIR");
+        assert!(
+            TorRelayConfig::from_env("fallback").is_none(),
+            "no onion address configured must mean no Tor, not a partial one"
+        );
+
+        // Address alone: Tor, with the caller's state directory and port 80.
+        std::env::set_var("POUCH_RELAY_TOR_ONION", "example.onion");
+        let config = TorRelayConfig::from_env("fallback").expect("an address is enough");
+        assert_eq!(config.onion_host, "example.onion");
+        assert_eq!(config.onion_port, 80);
+        assert_eq!(
+            config.state_dir, "fallback",
+            "the caller owns where state lives when the variable is unset"
+        );
+
+        // An unparseable port falls back to 80 rather than refusing. The port
+        // is not a security parameter — a wrong one fails loudly at connect
+        // time, it does not quietly weaken anything.
+        std::env::set_var("POUCH_RELAY_TOR_PORT", "not-a-port");
+        assert_eq!(TorRelayConfig::from_env("fallback").unwrap().onion_port, 80);
+
+        std::env::set_var("POUCH_RELAY_TOR_PORT", "9150");
+        std::env::set_var("POUCH_TOR_STATE_DIR", "/tmp/explicit");
+        let config = TorRelayConfig::from_env("fallback").unwrap();
+        assert_eq!(config.onion_port, 9150);
+        assert_eq!(config.state_dir, "/tmp/explicit");
+
+        std::env::remove_var("POUCH_RELAY_TOR_ONION");
+        std::env::remove_var("POUCH_RELAY_TOR_PORT");
+        std::env::remove_var("POUCH_TOR_STATE_DIR");
+    }
 
     #[tokio::test]
     async fn an_onion_host_that_is_not_a_valid_hostname_is_rejected_before_bootstrapping() {

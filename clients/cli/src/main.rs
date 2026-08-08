@@ -62,6 +62,23 @@ ENVIRONMENT
   the database and uses a passphrase if one is set, or the development device
   key if not. POUCH_PASSPHRASE and POUCH_RECOVERY_KEY have the same
   shell-history problem and exist for the same reason: this client is headless.
+
+TOR
+  POUCH_RELAY_TOR_ONION  relay onion address, no scheme or port
+  POUCH_RELAY_TOR_PORT   port on that onion service    (default 80)
+  POUCH_TOR_STATE_DIR    Tor's own state directory     (default ./pouch-tor-state)
+
+  Setting POUCH_RELAY_TOR_ONION routes every command that reaches the relay —
+  add, send, send-file, receive — through a Tor circuit, so the relay never
+  learns this device's IP address. It is all four or none: a Tor setting that
+  covered only some of them would leave the address exposed at the moments it
+  was not covered, which is worse than not offering it.
+
+  The first such command is slow. Bootstrapping Tor means fetching a consensus
+  and building a circuit, which takes seconds to tens of seconds against an
+  empty state directory. If Tor cannot be reached the command fails; it does
+  not fall back to the direct route, because falling back would send over a
+  route the user did not choose.
 ";
 
 #[tokio::main]

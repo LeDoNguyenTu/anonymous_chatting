@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 use pouch_core::Pouch;
 
-use crate::config::{db_key, db_path, relay};
+use crate::config::{db_key, db_path, open_for_relay, relay};
 
 /// `pouch-cli send <conversation> <text>`
 pub async fn send(args: &[String]) -> Result<()> {
@@ -13,8 +13,7 @@ pub async fn send(args: &[String]) -> Result<()> {
     let text = args
         .get(2)
         .context("usage: pouch-cli send <conversation> <text>")?;
-    let mut key = db_key()?;
-    let mut pouch = Pouch::open(&db_path(), &mut key, relay())?;
+    let mut pouch = open_for_relay().await?;
 
     let manifest = pouch.send_message(conversation, text).await?;
 
@@ -29,8 +28,7 @@ pub async fn send(args: &[String]) -> Result<()> {
 
 /// `pouch-cli receive`
 pub async fn receive(_args: &[String]) -> Result<()> {
-    let mut key = db_key()?;
-    let mut pouch = Pouch::open(&db_path(), &mut key, relay())?;
+    let mut pouch = open_for_relay().await?;
     let received = pouch.receive_messages().await?;
     if received.is_empty() {
         println!("nothing waiting");
