@@ -44,15 +44,19 @@ impl Pouch {
     ) -> Result<String, ApiError> {
         let encoded = serde_json::to_vec(payload).map_err(|_| CryptoError::Encryption)?;
         // Every payload is compressed, always — see send_message for why this
-        // is not a per-message choice.
+        // is not a per-message choice. Padded after compressing, same ordering
+        // as the attachment pipeline (SPEC §7.1) — padding before compression
+        // would defeat compression, and padding after encryption would not
+        // hide size at all.
         let compressed = compression::compress(&encoded).map_err(|_| CryptoError::Encryption)?;
+        let padded = crate::padding::pad(&compressed);
 
         let conversation = self
             .conversations
             .get_mut(conversation_id)
             .ok_or(ApiError::UnknownConversation)?;
 
-        let blob = conversation.encrypt(&self.identity, &compressed, &self.provider)?;
+        let blob = conversation.encrypt(&self.identity, &padded, &self.provider)?;
         let peer_inbox = conversation.peer_inbox_id().to_string();
         let message_id = self.relay.send(&peer_inbox, &blob).await?;
         self.persist_mls_state()?;
@@ -91,7 +95,14 @@ impl Pouch {
         let compressed = compression::compress(&encoded).map_err(|_| CryptoError::Encryption)?;
         manifest.compressed(COMPRESSION_ALGORITHM, encoded.len(), compressed.len());
 
-        let blob = conversation.encrypt(&self.identity, &compressed, &self.provider)?;
+        // Pad after compressing, before encrypting (SPEC §7.1's ordering, the
+        // same one the attachment pipeline already enforces). Every message
+        // lands in a fixed bucket, so blob size stops distinguishing a
+        // two-word reply from a paragraph — D-041.
+        let padded = crate::padding::pad(&compressed);
+        manifest.padded(compressed.len(), padded.len());
+
+        let blob = conversation.encrypt(&self.identity, &padded, &self.provider)?;
         manifest.encrypted(
             CIPHERSUITE_NAME,
             AEAD_NAME,
@@ -217,13 +228,17 @@ impl Pouch {
 
             match decrypted {
                 Some((conversation_id, message)) => {
-                    // Every payload this build sends is compressed (D-009), so
-                    // every payload it receives is decompressed before being
-                    // parsed. Anything that fails either step — corrupt,
-                    // tampered, or sent by a pre-compression build — is
-                    // protocol noise or a version mismatch, not a message. It
-                    // is not rendered as one.
-                    let Ok(decompressed) = compression::decompress(&message.plaintext) else {
+                    // Every payload this build sends is compressed (D-009) and
+                    // padded (D-041), so every payload it receives is unpadded
+                    // and decompressed before being parsed. Anything that fails
+                    // any of those steps — corrupt, tampered, or sent by a
+                    // build from before either landed — is protocol noise or a
+                    // version mismatch, not a message. It is not rendered as
+                    // one.
+                    let Some(unpadded) = crate::padding::unpad(&message.plaintext) else {
+                        continue;
+                    };
+                    let Ok(decompressed) = compression::decompress(&unpadded) else {
                         continue;
                     };
                     let Ok(payload) = serde_json::from_slice::<Payload>(&decompressed) else {

@@ -205,6 +205,47 @@ async fn a_highly_compressible_message_round_trips_and_the_manifest_says_so() {
 }
 
 #[tokio::test]
+async fn a_short_message_reports_padding_and_still_round_trips() {
+    // Padding (manifest stage 4, D-041) is applied inside send_message after
+    // compression and reversed inside receive_messages before decompression.
+    // Same reasoning as the compression test above: a unit test on the padding
+    // module proves pad/unpad round-trip, but it cannot prove the send and
+    // receive call sites agree on whether padding happened at all — which is
+    // the thing a wire-format bug would actually break.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let (addr, _) = spawn_relay(dir.path()).await;
+    let relay = || RelayConfig::insecure_local(format!("http://{addr}"));
+
+    let brian_db = dir.path().join("brian.db").to_string_lossy().into_owned();
+    let mai_db = dir.path().join("mai.db").to_string_lossy().into_owned();
+
+    let mut brian = Pouch::create("Brian", &brian_db, &mut key(0x77), relay()).expect("brian");
+    let mut mai = Pouch::create("Mai", &mai_db, &mut key(0x88), relay()).expect("mai");
+    let code = mai.invite_code().expect("code");
+    let conversation = brian.add_contact("Mai", &code).await.expect("adds");
+    mai.receive_messages().await.expect("mai joins");
+
+    let manifest = brian
+        .send_message(&conversation, "hi")
+        .await
+        .expect("sends");
+
+    let pad_row = manifest
+        .stages()
+        .iter()
+        .find(|(s, _)| s.number() == 4)
+        .expect("stage 4 present");
+    assert!(pad_row.1.ran(), "stage 4 did not report as having run");
+
+    let received = mai.receive_messages().await.expect("mai receives");
+    assert_eq!(received.messages.len(), 1);
+    assert_eq!(
+        received.messages[0].body, "hi",
+        "the message did not survive pad-then-unpad intact"
+    );
+}
+
+#[tokio::test]
 async fn a_passphrase_re_encrypts_the_database_and_the_old_key_stops_working() {
     // SPEC §7.2: a passphrase via Argon2id, for users who opt in. The claim
     // being tested is the one that matters — after turning it on, the key that
@@ -729,12 +770,20 @@ async fn seventy_kb_and_two_hundred_kb_attachments_produce_identically_sized_blo
     // database rather than through the client — the property under test is
     // what an operator with the raw database would see, not what the SDK
     // reports back to itself.
+    //
+    // The threshold separating "attachment upload" from "message payload" is
+    // 128 KB rather than the 10 KB this test used before D-041. Message
+    // payloads are now padded too, into the 64 KB bucket, so blob size no
+    // longer sorts them from attachments at 10 KB — 128 KB sits between the
+    // 64 KB bucket every message here lands in and the 256 KB bucket both
+    // attachments land in.
+    const MESSAGE_BUCKET_CEILING: i64 = 128 * 1024;
     let conn = rusqlite::Connection::open(&relay_db).expect("opens the relay database");
     let mut stmt = conn
-        .prepare("SELECT length(blob) FROM queue WHERE length(blob) > 10000 ORDER BY length(blob)")
+        .prepare("SELECT length(blob) FROM queue WHERE length(blob) > ?1 ORDER BY length(blob)")
         .expect("prepares");
     let sizes: Vec<i64> = stmt
-        .query_map([], |row| row.get(0))
+        .query_map([MESSAGE_BUCKET_CEILING], |row| row.get(0))
         .expect("queries")
         .collect::<Result<_, _>>()
         .expect("reads sizes");
@@ -747,6 +796,29 @@ async fn seventy_kb_and_two_hundred_kb_attachments_produce_identically_sized_blo
     assert_eq!(
         sizes[0], sizes[1],
         "a 70 KB and a 200 KB attachment produced differently sized blobs on the relay"
+    );
+
+    // The same property, one level down: the two reference messages that name
+    // those attachments are themselves indistinguishable by size, because
+    // D-041 pads message payloads too. Without this, the reference would be
+    // the one unpadded blob in the queue and its size would leak that an
+    // attachment had just been sent.
+    let mut stmt = conn
+        .prepare("SELECT length(blob) FROM queue WHERE length(blob) <= ?1 ORDER BY length(blob)")
+        .expect("prepares");
+    let message_sizes: Vec<i64> = stmt
+        .query_map([MESSAGE_BUCKET_CEILING], |row| row.get(0))
+        .expect("queries")
+        .collect::<Result<_, _>>()
+        .expect("reads sizes");
+
+    assert!(
+        !message_sizes.is_empty(),
+        "expected the attachment reference messages to be in the queue"
+    );
+    assert!(
+        message_sizes.iter().all(|s| *s == message_sizes[0]),
+        "message payload blobs differ in size despite padding: {message_sizes:?}"
     );
 }
 

@@ -1294,3 +1294,69 @@ already-audited, already-relied-upon crate, verified by the same test suite
 that already exists for it — not a new trust decision about SQLCipher or
 about how the local database is protected. D-019 and D-024's reasoning is
 otherwise unchanged.
+
+---
+
+## D-041 — Fixed-size padding extended to message payloads; wire-format break
+**Date:** 2026-08-02 · **Status:** accepted
+
+**Decision.** `core/src/padding.rs`'s fixed buckets (64 KB/256 KB/1 MB/4 MB/
+16 MB, then 16 MB increments — SPEC §7.1 step 3), already used for
+attachments since D-038, now also pad every message payload: compress → pad
+→ encrypt on send, decrypt → unpad → decompress on receive
+(`core/src/api/messaging.rs`). Manifest stage 4 (`PADDED`) reports `Ran` for
+every message from this build forward, matching stage 3's (`COMPRESSED`)
+D-036 precedent.
+
+**Three send paths, not two.** `send_message` and `send_payload` are the
+obvious ones. The third is easy to miss and was found by a failing test
+rather than by reading: `send_attachment` (`core/src/api/attachments.rs`)
+builds its own encrypt path inline rather than routing through
+`send_payload`, for the attachment *reference* message that names an
+uploaded bucket. Leaving it unpadded broke receiving outright — the receive
+side unpads unconditionally — but the quieter problem is the one that
+matters: an unpadded reference would have been the single odd-sized blob in
+a queue of bucketed ones, so its size alone would have signalled "an
+attachment was just sent." It is padded on the same terms as every other
+payload. It is deliberately *not* reported at manifest stage 4, because that
+stage already names the padding applied to the attachment content, which is
+the larger and more meaningful number for an attachment; reporting the
+reference's padding there instead would replace a true statement with a
+less useful true statement.
+
+**Why the smallest bucket (64 KB) for a short text message is not wasteful
+in the way it looks.** The relay already accepts blobs up to
+`MAX_BLOB_BYTES` (20 MB); the fixed buckets exist to blunt size
+fingerprinting, the same property D-038's attachment padding provides — a
+two-word reply and a paragraph both land in the 64 KB bucket if both compress
+under it, so an observer of blob size alone cannot distinguish message
+length classes. This is a bandwidth-for-metadata trade the project already
+made once for attachments; extending it to messages is the same trade, not
+a new one.
+
+**Wire compatibility, same reasoning as D-036.** A build from before this
+commit sends unpadded ciphertext; this build's `unpad` step will find no
+valid length prefix in an old peer's message and silently drop it, the same
+way an unrecognised payload already is (protocol noise or a version
+mismatch, not a message a user should see). Both sides of a conversation
+need to be this build or newer. This project has no live population of
+mismatched builds to protect, so a clean break is the honest choice over
+adding version-sniffing complexity to preserve compatibility nothing needs.
+
+**A test threshold moved, and it is worth knowing why.** SPEC §8.5's
+end-to-end test sorted attachment blobs from message blobs by size, at a
+10 KB threshold. With message payloads bucketed at 64 KB that no longer
+separates them, so the threshold is now 128 KB — between the 64 KB bucket
+messages land in and the 256 KB bucket the test's two attachments land in.
+The same test now also asserts that the message-payload blobs are
+identically sized to each other, which is the new property this decision
+introduces and was previously untested.
+
+**Rejected alternative.** A separate, message-specific bucket scheme rather
+than reusing the attachment one. Rejected: SPEC §7.1 already specifies one
+scheme, both message and attachment payloads are compact binary blobs by
+the time they reach padding, and a second scheme would be a second thing to
+get right for no stated benefit. The shared module now lives at
+`core/src/padding.rs`, moved out of `core/src/attachments/` in the same
+session — a mechanical relocation with no logic change.
+
