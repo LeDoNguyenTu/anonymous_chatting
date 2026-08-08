@@ -12,13 +12,13 @@ Do not begin a phase before the previous phase meets its exit criteria.
 
 | | |
 |---|---|
-| **Phase complete** | 0 — Foundation · 1 — Working 1:1 encrypted chat · 2 — Storage control and hardening · 3 — Attachments and compression · 4 — Tor transport and sealed sender, all **fully**. Phase 4's exit criteria are met and were verified against the live Tor network, not asserted — see that phase's section below for exactly what was run and what was not. |
-| **Phase next** | 5 — Android client. Not started. |
-| **Branches** | `main` (repository default) and `develop`, both pushed; `main` intentionally left behind `develop` — see the note in this section's history for why. `phase-4-tor-sealed-sender` holds all Phase 4 work, pushed to origin. **Not yet merged to `develop`** — it merges by fast-forward once its final review is clean, per `superpowers:finishing-a-development-branch`. The worktree is `.worktrees/phase-4-tor/`. |
-| **Blocked on** | Nothing. One open *design* item, deliberately deferred rather than blocked: cover traffic (D-044) needs a specification from the project owner before anyone implements it. |
-| **Tests** | 145 Rust core + 14 end-to-end + 14 relay + 4 server-blindness = **177 Rust** (1 ignored — the live-Tor test, which needs real network access and is run by hand) · **44 frontend**. Was 163 Rust / 36 frontend at the start of Phase 4. |
-| **CI** | green on `phase-4-tor-sealed-sender` through commit `2a52a71`, confirmed via `gh run list`. Everything below was also verified locally: `cargo fmt --check`, `clippy -D warnings`, the full suite, both guardrail scripts, `cargo audit`, the desktop crate's own `cargo check --all-targets --locked`, and the frontend's typecheck/test/build. **The Tauri window has still never been launched** — this environment cannot run a GUI — so every claim about how a screen *looks* rests on build, typecheck, and `renderToStaticMarkup` assertions, not on anyone seeing it. |
-| **Version** | `0.1.3`, bumped at Phase 4 close-out per the project owner's instruction to bump after each phase or critical fix. Four files move together — see `docs/CONTEXT.md`'s conventions list. |
+| **Phase complete** | 0 · 1 · 2 · 3 · 4, all **fully**. Phase 4's exit criteria were verified against the live Tor network, not asserted. Merged to `develop` by the project owner via PR #3 (`c2f3197`). |
+| **Phase in progress** | 5 — Android client. **Does not meet its exit criteria and is not close to.** Foundation built and verified as far as this environment allows; every SPEC §6.7 screen except the conversation list is unwritten. See the Phase 5 section below for exactly what exists and what does not. |
+| **Branches** | `main` and `develop`, both pushed; `main` intentionally behind `develop`. `phase-5-android` holds the Phase 5 work, pushed to origin, **not merged**. No worktree this time — the Phase 4 worktree at `.worktrees/phase-4-tor/` is merged and can be removed. |
+| **Blocked on** | Nothing in code. **Two design items need the project owner**, both recorded rather than improvised: cover traffic (D-044) and Android Keystore (D-035, SPEC §2.6 — "an implementation shortcut would mean storing a key in a less protected location"). |
+| **Tests** | 148 Rust core + 14 end-to-end + 14 relay + 4 server-blindness = **180 Rust workspace** (1 ignored — the live-Tor test, run by hand) · **11 Android bridge** (`clients/android/jni`, run on the host) · **44 desktop frontend** · **11 Android JVM** (Custody Strip state mapping — written, never yet executed anywhere). Was 177 Rust / 44 frontend at the end of Phase 4. |
+| **CI** | Two new jobs, `android-bridge` and `android-app`. As of this writing `android-bridge` has passed fmt, clippy, the 11 host tests, and `cargo audit` on its own lock file; **the four-ABI cross-compile had not yet finished, so whether the arti and SQLCipher trees link for Android is not yet known.** Everything else was verified locally on Windows: fmt, clippy `-D warnings`, the full workspace suite, both guardrail scripts, the desktop crate's `cargo check --all-targets --locked`, and the JNI crate's own `--locked` test run. |
+| **Version** | `0.1.4`. Marks **Phase 5 in progress**, not Phase 5 complete. Six files now move together — see `docs/CONTEXT.md`, whose explanation of *why* was wrong until this session. |
 
 ### Owed to the project owner
 
@@ -831,6 +831,198 @@ dependency accepting a configuration and quietly not providing the capability.
   spawns a relay on an ephemeral port, so a transient bind/timing issue is
   plausible — but that is a hypothesis, not a diagnosis. **If CI hits it,
   capture the failure output before doing anything else.**
+
+---
+
+---
+
+## Phase 5 — Android client · in progress · 2026-08-09
+
+**This phase does not meet its exit criteria and is not close to.** SPEC §9
+requires an APK installed on a physical device exchanging messages with a
+desktop client, and requires the Kotlin UI to mirror the desktop feature set.
+Neither has happened. What follows is what exists, what verified it, and what
+did not.
+
+### The environment, because it determined the design
+
+Checked before any code was written:
+
+| | |
+|---|---|
+| Android SDK | absent |
+| Android NDK | absent |
+| Gradle | absent |
+| `cargo-ndk` | absent |
+| Rust Android targets | none — only `x86_64-pc-windows-msvc` |
+| JDK | 24 present, but AGP 8.7 supports 17–21 |
+| Emulator / device | none |
+
+So *nothing* Android could be compiled locally, let alone run. That is worse
+than the Tauri situation, where at least a CI job builds the shell. The
+response was to build bottom-up: verify what a machine can check, and make the
+part that cannot be checked as small as possible.
+
+### What shipped
+
+**`core/src/views.rs` — the ten client view shapes (D-046).** Not Android work,
+but caused by it. The desktop client defined `ConversationView`,
+`SecurityDetailsView`, `SendResult` and seven others privately in
+`commands.rs`; the Android client needs the same ten. Two hand-maintained
+copies of structures carrying security state drift, and the drift is silent —
+a field added to `SecurityDetails` and missed in one client renders a blank
+where a mechanism should be named. Nothing fails, no test breaks, the screen
+just under-reports what is protecting the user. They now live in the core and
+`commands.rs` converts rather than defines. 3 new tests; desktop `cargo check`,
+clippy and fmt clean on Windows.
+
+**`clients/android/jni/` — the bridge (D-048).** A `cdylib` with its own
+committed `Cargo.lock`, which is exactly the case D-029 named in advance.
+
+The whole JNI surface is **two exported functions**: `nativeStart`, and
+`nativeCall(operation, argsJson)` returning JSON. The desktop equivalent is 35
+separate Tauri commands. The reason for collapsing it is the environment: 35
+hand-marshalled JNI functions would have been 35 pieces of code executable
+nowhere, each an opportunity for a mishandled `JString` or an escaping panic,
+discoverable only on hardware nobody had. One function means the untestable
+surface is one function, and everything behind it — `session.rs`, holding every
+operation and every decision about what happens when no identity is open — is
+ordinary Rust that runs under `cargo test`.
+
+**11 tests pass on this Windows host.** They cover what would otherwise only
+appear on a phone:
+
+- an unlisted operation is refused, not forwarded to the core
+- thirteen operations report `NotOpen` rather than panicking — a panic
+  unwinding across FFI is undefined behaviour
+- a failed send still returns all nine manifest stages
+- a retention typo (`30` for `30d`) is refused rather than silently selecting
+  a policy that deletes messages
+- a malformed recovery key is refused *before* anything is written to disk
+
+**`clients/android/app/` — Gradle, Kotlin, Compose.** `Pouch.kt` is a typed
+facade, one suspend function per operation, no general-purpose passthrough —
+the same discipline `bridge.ts` has, for the same reason. Every function hops
+to `Dispatchers.IO` itself rather than documenting that callers should, because
+a Tor bootstrap on the main thread is an ANR and "the caller will remember" is
+not a property.
+
+The Custody Strip is keyed by the label the core sends, not by an enum the app
+defines, so a state the core knows and this build does not returns `UNKNOWN` in
+amber rather than matching the wrong entry. 11 JVM unit tests assert what it
+must never do: render an unknown state as verified, treat an empty string as a
+default, describe a changed key without naming interception, or describe Tor
+without naming what it does not hide.
+
+**Two CI jobs**, because they are the only verification available:
+
+- `android-bridge` — fmt, clippy, the 11 host tests, `cargo audit` against this
+  crate's own lock file (the repo-root audit job reads the *workspace* lock, so
+  this tree was previously unscanned), then a four-ABI cross-compile. The
+  cross-compile step does not trust its own exit code: it stats four `.so`
+  files and fails on any missing, because `cargo ndk` exiting 0 with a silently
+  empty target would ship as an APK that crashes on exactly the devices nobody
+  tested. D-024's pattern.
+- `android-app` — JVM unit tests, lint, `assembleDebug`, and a check that the
+  **merged** manifest requests `INTERNET` and nothing else. Merged rather than
+  source, because a permission can arrive from a library's own manifest during
+  merge without anyone editing a file here.
+
+**Two guardrails** (`scripts/check-guardrails.sh` now runs 6 checks):
+
+- no client may import `pouch_core::crypto::` or `::storage::`. D-012 was a
+  convention held up by review, and a second client is exactly when such a
+  convention slips, because the new one is written by copying shapes.
+- every `#[no_mangle]` export must have a `catch_unwind`. Counted rather than
+  grepped, because the failure mode is additive: someone adds a third entry
+  point and forgets the wrapper.
+
+Both were **negative-tested**. An uncaught entry point produced "3 JNI entry
+points but only 2 catch_unwind"; a `crypto::` import named the file and line.
+Exit 1 in both cases.
+
+### Two documentation errors found and corrected
+
+Neither was introduced this session; both had been wrong for some time.
+
+- **`CONTEXT.md` explained the version-bump convention incorrectly.** It said
+  the desktop crate's version must move because
+  `SecurityDetailsView.app_version` reads `env!("CARGO_PKG_VERSION")` from that
+  crate. The macro is invoked in `core/src/api/mod.rs`, so it expands to the
+  **core** crate's version. The desktop version still has to move — it is what
+  the installer reports — but not for the stated reason.
+- **`pouch_core::SPEC_PHASE` read `2`** through the whole of Phases 3 and 4.
+  Nothing referenced it, so nothing forced it to move. That is how an honesty
+  marker rots: under-claiming never breaks a test, so nobody notices. Now `4`.
+
+### RUSTSEC-2026-0212, re-checked as the audit file asked
+
+`.cargo/audit.toml` carried a note left in advance: *"Not reachable today —
+nothing in the compiled graph calls it — but it is the entry to re-check first
+when the Android client lands in Phase 5, since that is aarch64."*
+
+Re-checked, and **the finding changed.** `cargo tree -i libcrux-traits --target
+aarch64-linux-android` resolves `libcrux-secrets 0.0.5` through `libcrux-sha3`,
+`hpke-rs` and `openmls_rust_crypto`. It is genuinely compiled for aarch64 now.
+The old wording described an x86_64-only project.
+
+Still accepted, on different grounds, both written into the file: the
+advisory's own impact is availability only (`VC:N/VI:N/VA:H`), and the path
+that reaches it is `libcrux-sha3`'s SHAKE code, which a SHA-256 ciphersuite
+never calls — the same reasoning already recorded for -0074, -0207 and -0208.
+Not fixable by upgrading: `libcrux-traits 0.0.5` requires `libcrux-secrets
+0.0.5` and 0.0.6 is semver-incompatible under Cargo's 0.0.x rules.
+
+### What was NOT verified, and what is NOT built
+
+Read this before believing anything above implies a working Android app.
+
+- **No Android cross-compile has completed anywhere.** At the time of writing
+  the `android-bridge` job had passed fmt, clippy, the host tests and the
+  audit, and was still running the four-ABI build. **Whether `arti`, `openmls`
+  and SQLCipher actually link for Android is not yet known.** D-047's vendored
+  OpenSSL is a prediction about what would otherwise fail, not a confirmed fix.
+- **No Kotlin has been compiled.** Not once, anywhere. The `android-app` job is
+  the first attempt. Expect it to need iteration.
+- **No APK exists.** No device, no emulator, no signing key. The release build
+  is deliberately unsigned: a release keystore is the project owner's to hold,
+  and generating one in CI would put the app's identity somewhere it does not
+  belong.
+- **Most screens are not written.** Conversation view, add contact, safety
+  number, privacy and storage, security details, transport settings, backup and
+  restore, and the identity-change modal — the desktop client has all of them,
+  this one has none. The app says so on its own empty state rather than
+  presenting a shell that looks finished.
+- **The Custody Strip copy is duplicated** from `CustodyStrip.tsx`. That is the
+  same drift D-046 just removed from the view shapes, and the same fix applies:
+  move it onto the core types the way `Route::explanation` already is. Not done
+  here because it means changing the desktop rendering path in the same commit
+  as a new client's first screens.
+
+### Open, and needing the project owner
+
+1. **Android Keystore (D-035).** The largest gap in this client. It uses the
+   same device-file placeholder as the desktop client — a random key in a file
+   beside the database it unlocks. This is a **SPEC §2.6 stop-and-ask**: "an
+   implementation shortcut would mean storing a key in a less protected
+   location." The realistic design has Kotlin unwrap a Keystore-wrapped key and
+   pass the bytes across JNI, which puts key material in a JVM `ByteArray` that
+   cannot be reliably zeroed — a real trade-off, not an obvious win, and one
+   the owner should decide rather than have decided for them.
+2. **Cover traffic (D-044).** Unchanged from Phase 4.
+3. **Video attachments.** SPEC §8.4's video case is still open (D-038).
+4. **The unreproducible flake**,
+   `two_clients_exchange_text_and_the_relay_learns_nothing`. Not seen since.
+
+### Next, in order
+
+1. Read the `android-bridge` and `android-app` CI results and fix what they
+   find. Nothing else should start first — everything above rests on code that
+   has never been compiled for its target.
+2. Decide the Keystore question (1 above).
+3. Build the remaining SPEC §6.7 screens for Android.
+4. Move the Custody Strip copy into the core, for both clients.
+5. An APK on a real device — the actual exit criterion.
 
 ---
 

@@ -1,7 +1,7 @@
 {
   "name": "pouch-desktop",
   "private": true,
-  "version": "0.1.3",
+  "version": "0.1.4",
   "type": "module",
   "description": "Pouch desktop client. UI only \u2014 all security logic lives in the Rust core.",
   "scripts": {

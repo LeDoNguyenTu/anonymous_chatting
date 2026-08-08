@@ -1561,3 +1561,145 @@ environment at all stays the host's decision.
 **Rejected: follow the plan literally and note the gap.** A known partial
 protection, documented but shipped, is the thing this project has repeatedly
 decided not to do. The cost of the wider fix was one helper function.
+
+---
+
+## D-046 — Client view shapes live in the core, not in each client
+
+**Date:** 2026-08-09 · **Status:** accepted · **Phase:** 5
+
+Ten `Serialize` DTOs — `ConversationView`, `MessageView`, `ManifestRow`,
+`SendResult`, `RelayVisibilityView`, `SecurityDetailsView`,
+`IdentityChangeView`, `TransportOptionView`, `AttachmentView`, and the two
+backup views — were defined in `clients/desktop/src-tauri/src/commands.rs`.
+They now live in `core/src/views.rs`, and the desktop client converts to them
+rather than defining them.
+
+**Why now.** SPEC §9's Phase 5 requires the Android client to *mirror the
+desktop feature set*. Mirroring the feature set means needing the same ten
+shapes, and the obvious route — write them again in the new client — creates
+two hand-maintained copies of the same structures.
+
+**Why it matters more here than in ordinary code.** These carry security
+state. Add a field to `SecurityDetails`, pick it up in one client and miss it
+in the other, and one screen renders a blank where a mechanism should be
+named. Nothing fails. No test breaks. The screen simply under-reports what is
+protecting the user, which is precisely what SPEC §2.3 and Prime Directive 3
+exist to prevent. Drift in a colour token is cosmetic; drift here is a quiet
+false negative in the one part of the interface whose entire job is to be
+accurate about the mechanisms in use.
+
+Every string in these types still comes from the core type it projects —
+`IdentityState::label()`, `Route::name()`, `Stage::label()` — so no client can
+invent its own wording for a route, a stage, or an identity state. The types
+are projections, not a second source of truth.
+
+**One exception is stated on its face.** `ExportBackupView` carries the
+recovery key and the encrypted backup, because SPEC §7.3 puts the recovery key
+in the user's hands and nowhere else; there is no version of that feature where
+it does not cross to the UI. The type says so in its own doc comment rather
+than leaving it to be noticed.
+
+**Rejected: a separate `pouch-views` crate.** It would have been a third crate
+to version, pin, and keep in step with `core` for no isolation benefit — these
+types are projections *of* core types and cannot be built without them.
+
+**Rejected: generating the Kotlin side.** A code generator would remove the
+Kotlin/Rust duplication too, and that is a real remaining gap. It was not built
+because the generator becomes a dependency of the build with its own pins and
+failure modes, and the duplication it removes is currently ten small structs
+guarded by `ignoreUnknownKeys` and by the JNI crate's own field-presence tests.
+Worth revisiting if the view surface grows.
+
+**Found while doing this, and fixed:** `pouch_core::SPEC_PHASE` still read `2`
+after Phases 3 and 4 had both shipped. Nothing referenced it, so nothing forced
+it to move. That is how an honesty marker rots — under-claiming never breaks a
+test, so it is never noticed. Now `4`, with a note to bump it when a phase
+closes.
+
+---
+
+## D-047 — Vendored OpenSSL for the Android build only
+
+**Date:** 2026-08-09 · **Status:** accepted · **Phase:** 5
+
+`rusqlite`'s `bundled-sqlcipher` feature, which the workspace selects and which
+reaches every client through `pouch-core`, compiles SQLCipher from source but
+links the **host's** OpenSSL for its crypto. There is no host OpenSSL for an
+Android target, so that configuration cannot produce the libraries this phase
+exists to build.
+
+`clients/android/jni` therefore names
+`bundled-sqlcipher-vendored-openssl`, which builds OpenSSL from source for
+whichever target is being compiled.
+
+**This is a build-configuration decision, not a cryptographic one.** The same
+SQLCipher, the same AES-256, the same `PRAGMA cipher_version` check D-024 put
+in place. What changes is where the crypto library comes from at link time.
+
+**Scoped to Android** — `[target.'cfg(target_os = "android")'.dependencies]` —
+rather than named as an ordinary dependency. Cargo features are additive, so an
+unconditional entry would also apply when the crate is built and tested on a
+developer's machine, where compiling OpenSSL from source is unnecessary and
+adds build-time prerequisites (perl, nasm) that nothing else in this project
+needs. `resolver = "2"` in that crate's `[workspace]` table is what makes the
+scoping real: under the v1 resolver, target-specific features leak into every
+target.
+
+**Unverified at the time of writing.** No cross-compile has been run anywhere.
+This machine has no NDK, no Android Rust target, and no `cargo-ndk`. Whether
+the `arti`, `openmls` and SQLCipher trees actually link for Android is what the
+`android-bridge` CI job answers — it is the reason that job exists, and it is
+the reason it checks for four `.so` files rather than trusting an exit code.
+
+---
+
+## D-048 — One JNI entry point, not one per operation
+
+**Date:** 2026-08-09 · **Status:** accepted · **Phase:** 5
+
+The Android bridge exposes two exported functions: `nativeStart`, and
+`nativeCall(operation, argsJson) -> json`. The desktop client's equivalent
+surface is 35 separate Tauri commands.
+
+**The reason is what could be tested.** This project had no Android SDK, no
+NDK, no emulator, no device, and no JVM available while the bridge was written.
+Thirty-five hand-marshalled JNI functions would have meant thirty-five pieces of
+code that could not be executed anywhere — each one an opportunity for a
+`JString` mishandled, a local reference leaked, or a panic escaping into
+undefined behaviour, discoverable only on hardware nobody had.
+
+Collapsing the marshalling into one function makes the untestable surface
+exactly one function. Everything behind it — `session.rs`, which holds every
+operation, every argument shape, and every decision about what happens when no
+identity is open — is ordinary Rust with no `jni` types in it, and runs under
+`cargo test` on any machine. Eleven tests do.
+
+**The cost, stated plainly:** dispatch is by string, so an operation name typo
+in Kotlin is a runtime error rather than a link error. Three things blunt it.
+The match arm list is explicit and an unknown name is refused rather than
+forwarded — a bridge that forwards unrecognised requests to the core grows a
+surface nobody reviewed. The error names the operation, so the message alone is
+diagnosable without attaching a debugger to a phone. And Kotlin's `Pouch`
+object is a typed facade with one function per operation and no
+general-purpose passthrough, so screens never write an operation name at all.
+
+**Rejected: a handle-based design** returning a pointer to Kotlin as a `jlong`.
+It is the conventional JNI shape, and it hands the JVM a pointer it can outlive
+— a use-after-free waiting for a configuration change to trigger it. One
+process-wide session, guarded, mirrors what `AppState` already does on the
+desktop and cannot be dangled.
+
+**`unsafe_code` is `deny`, not `forbid`.** Every other crate in this project
+forbids it outright. A JNI entry point must be `#[no_mangle]` so the JVM can
+find it by name, and the compiler treats `#[no_mangle]` as unsafe because two
+libraries exporting one symbol is undefined at link time. `forbid` cannot be
+overridden anywhere, so it would make an FFI library impossible to write rather
+than safer. Two `#[allow(unsafe_code)]` attributes, each with a reason, on the
+two exports. There is no `unsafe` **block** anywhere in the crate — nothing
+dereferences a raw pointer — because the `jni` 0.21 entry-point signatures take
+`JNIEnv` by value.
+
+A guardrail enforces the part that matters: `scripts/check-guardrails.sh` check
+6 counts `#[no_mangle]` exports against `catch_unwind` wrappers and fails if a
+new entry point arrives without panic containment.
