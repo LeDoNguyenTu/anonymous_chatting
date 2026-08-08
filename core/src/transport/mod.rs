@@ -42,6 +42,24 @@ impl Route {
         }
     }
 
+    /// The same route written as a title rather than a status token.
+    ///
+    /// [`Route::label`] is deliberately shouted: in the Custody Strip it is a
+    /// state readout sitting beside `VERIFIED` and `KEY CHANGED`, and it
+    /// should read like one. A settings screen offering a choice is not a
+    /// status readout, and setting it in the same capitals would make picking
+    /// a transport look like an alarm.
+    ///
+    /// Both spellings live here rather than in each client so a screen cannot
+    /// invent its own name for a route the manifest calls something else.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Route::Direct => "Direct",
+            Route::Tor => "Tor",
+            Route::Offline => "Offline",
+        }
+    }
+
     /// The honest one-line description shown when the field is opened.
     ///
     /// Neither option is labelled "the secure one". The trade is stated and the
