@@ -15,6 +15,7 @@ import { Conversation } from "./screens/Conversation";
 import { ConversationList } from "./screens/ConversationList";
 import { FirstRun } from "./screens/FirstRun";
 import { PrivacyStorage } from "./screens/PrivacyStorage";
+import { TransportSettings } from "./screens/TransportSettings";
 import { SafetyNumber } from "./screens/SafetyNumber";
 import { SecurityDetails } from "./screens/SecurityDetails";
 import {
@@ -33,6 +34,7 @@ type Route =
   | { name: "safety"; contactId: string; contactName: string }
   | { name: "add-contact" }
   | { name: "privacy" }
+  | { name: "transport" }
   | { name: "security" }
   | { name: "backup-export" }
   | { name: "backup-import" };
@@ -174,6 +176,14 @@ export default function App({ bridge: injected }: { bridge?: PouchBridge } = {})
           onBack={openList}
           onWiped={() => setRoute({ name: "first-run" })}
           onExportBackup={() => setRoute({ name: "backup-export" })}
+          onTransportSettings={() => setRoute({ name: "transport" })}
+        />
+      )}
+
+      {route.name === "transport" && (
+        <TransportSettings
+          bridge={bridge}
+          onBack={() => setRoute({ name: "privacy" })}
         />
       )}
 

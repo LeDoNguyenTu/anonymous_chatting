@@ -6,9 +6,9 @@ members = ["core", "server", "clients/cli"]
 exclude = ["clients/desktop/src-tauri"]
 
 [workspace.package]
-version = "0.1.2"
+version = "0.1.3"
 edition = "2021"
-rust-version = "1.82"
+rust-version = "1.89"
 license = "AGPL-3.0-or-later"
 authors = ["Le Do Nguyen Tu"]
 repository = "https://github.com/LeDoNguyenTu/anonymous_chatting"
@@ -47,14 +47,72 @@ zeroize = { version = "=1.8.1", features = ["zeroize_derive"] }
 # The relay links the same library and simply never sets a key, which is the
 # behaviour D-019 wants: its database holds nothing worth protecting and must
 # not pretend otherwise.
-rusqlite = { version = "=0.32.1", features = ["bundled-sqlcipher"] }
+#
+# Bumped from 0.32.1 to 0.39.0 for Phase 4 — arti-client's tor-dirmgr
+# component requires rusqlite >=0.36.0,<0.40.0 and the two cannot coexist as
+# separate versions (both link the native sqlite3 library). See D-040.
+# `bundled-sqlcipher` is confirmed still present at 0.39.0. This forces the
+# thiserror and serde bumps below via arti-client's own transitive tree, and
+# requires three `as i64` casts in server/src/store.rs — see D-040 for why.
+rusqlite = { version = "=0.39.0", features = ["bundled-sqlcipher"] }
 
 # --- transport / server ---------------------------------------------------
 axum = "=0.7.9"
 reqwest = { version = "=0.12.9", default-features = false, features = ["json", "rustls-tls-manual-roots"] }
-rustls = "=0.23.20"
+# Bumped 0.23.20 -> 0.23.43 in Phase 4, and given a provider feature. The old
+# pin was dead: no workspace member named it, so the lock resolved 0.23.43
+# transitively through arti anyway. Now that the relay names rustls directly,
+# leaving the pin at 0.23.20 would put TWO rustls versions in the graph — and
+# the relay would install a crypto provider into the registry of the version
+# arti is *not* using, which fails silently rather than loudly. See D-043.
+#
+# `ring` because it is already this project's provider (reqwest pulls it in).
+# arti's own `rustls` feature deliberately selects no provider, leaving the
+# choice to the application. This is the TLS arti uses to reach the Tor
+# network — not Pouch's message crypto, which is MLS and unaffected.
+rustls = { version = "=0.23.43", default-features = false, features = ["ring"] }
 tokio = "=1.53.1"
 tower-http = "=0.6.2"
+
+# --- Tor transport (Phase 4) ------------------------------------------------
+# D-039: arti-client/tor-hsservice/tor-rtcompat pinned at 0.43.0 — the newest
+# release, 0.44.0, needs Rust 1.91 and failed its own docs.rs build; 0.43.0
+# needs 1.89 (which rust-version above now declares) and built cleanly.
+# `onion-service-service` enables `TorClient::launch_onion_service`, which the
+# relay needs to *be* an onion service. `onion-service-client` is what allows
+# `TorClient::connect` to accept a `.onion` address at all — without it arti
+# rejects one at runtime with "feature onion-service-client not compiled in",
+# not at compile time, so the client transport would build fine and fail in
+# the field. Found by actually running a circuit; see D-042.
+arti-client = { version = "=0.43.0", default-features = false, features = ["tokio", "rustls", "onion-service-client", "onion-service-service"] }
+tor-hsservice = "=0.43.0"
+tor-rtcompat = { version = "=0.43.0", features = ["tokio"] }
+# `StreamRequest::accept` takes a `tor_cell::relaycell::msg::Connected` and
+# tor-hsservice does not re-export it, so the relay needs this one directly.
+# Same 0.43.0 the rest of the arti family is pinned at — it is already in the
+# graph transitively; this only makes the direct use explicit and pinned.
+tor-cell = "=0.43.0"
+# arti deliberately does not implement `Display` for an onion address — it
+# redacts by default so a `.onion` cannot leak into a log by accident. The
+# relay has to print its own address for the operator to use, which means
+# calling `display_unredacted()` from this trait. Already in the graph
+# transitively; pinned here because the relay names it directly.
+safelog = "=0.8.2"
+
+# reqwest has no hook for a custom low-level connector, and arti-client has no
+# in-process SOCKS listener (only the separate `arti` CLI binary does, which
+# would mean shelling out to a subprocess — against this project's rule of
+# using an audited library through its intended interface). The Tor-routed
+# transport is therefore built directly on hyper/hyper-util instead, which is
+# also what bridges the relay's onion-service streams into axum server-side —
+# one new dependency category serving both directions, not two.
+hyper = "=1.11.0"
+hyper-util = { version = "=0.1.20", features = ["client-legacy", "server-auto", "tokio", "service"] }
+http-body-util = "=0.1.4"
+futures-util = "=0.3.33"
+http = "=1.5.0"
+tower-service = "=0.3.3"
+bytes = "=1.12.1"
 
 # --- payload --------------------------------------------------------------
 zstd = "=0.13.2"
@@ -68,9 +126,9 @@ img-parts = "=0.4.0"
 anyhow = "=1.0.104"
 base64 = "=0.22.1"
 hex = "=0.4.3"
-serde = { version = "=1.0.216", features = ["derive"] }
+serde = { version = "=1.0.225", features = ["derive"] }
 serde_json = "=1.0.134"
-thiserror = "=2.0.9"
+thiserror = "=2.0.19"
 uuid = { version = "=1.11.0", features = ["v4", "serde"] }
 tempfile = "=3.14.0"
 

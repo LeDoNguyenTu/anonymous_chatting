@@ -49,6 +49,11 @@ EXCLUDES=(
   ':(exclude)README.md'
   ':(exclude)docs/CONTEXT.md'
   ':(exclude)SPEC.md'
+  # Implementation plans, not shipped documentation or product copy — they
+  # necessarily quote the prime directives they must satisfy (same reason
+  # SPEC.md and DECISIONS.md are excluded above) and often contain literal
+  # test code asserting these terms are absent from the UI.
+  ':(exclude)docs/superpowers/plans/**'
 )
 
 # ---------------------------------------------------------------------------

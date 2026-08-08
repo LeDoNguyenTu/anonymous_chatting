@@ -192,10 +192,44 @@ impl Pouch {
     /// `Pouch` is.
     pub async fn transport_state(&mut self) -> Route {
         if self.relay.reachable().await {
-            Route::Direct
+            self.relay.route()
         } else {
             Route::Offline
         }
+    }
+
+    /// Which route the relay client is currently configured to use —
+    /// independent of whether it is reachable right now. Read by
+    /// [`Pouch::transport_state`] (which also checks reachability) and by the
+    /// Transport settings screen to show which option is active.
+    pub fn current_route(&self) -> Route {
+        self.relay.route()
+    }
+
+    /// Switches this client to a Tor-routed relay connection.
+    ///
+    /// Bootstraps a real Tor connection, which is slow (seconds to tens of
+    /// seconds) and can fail (no network, Tor blocked, bad onion address).
+    /// On failure the existing relay client is left exactly as it was —
+    /// this never silently falls back to Direct, because that would mean
+    /// the app claiming Tor was selected while actually still exposing the
+    /// user's IP.
+    pub async fn connect_tor(
+        &mut self,
+        config: crate::transport::TorRelayConfig,
+    ) -> Result<(), ApiError> {
+        let new_relay = RelayClient::connect_tor(config).await?;
+        self.relay = new_relay;
+        Ok(())
+    }
+
+    /// Switches this client back to a direct relay connection.
+    ///
+    /// Unlike [`Pouch::connect_tor`] this is fast (no bootstrap needed) so it
+    /// stays synchronous, matching `RelayClient::new`.
+    pub fn use_direct_relay(&mut self, config: RelayConfig) -> Result<(), ApiError> {
+        self.relay = RelayClient::new(config)?;
+        Ok(())
     }
 
     /// Every mechanism in use, for the Security details screen.
@@ -209,7 +243,10 @@ impl Pouch {
             protocol: PROTOCOL_NAME,
             local_database: "SQLCipher (AES-256)",
             passphrase_derivation: "Argon2id",
-            transport: "TLS 1.3, relay certificate pinned by SPKI hash",
+            transport: match self.relay.route() {
+                Route::Tor => "Tor onion circuit via arti",
+                _ => "TLS 1.3, relay certificate pinned by SPKI hash",
+            },
             relay_address: self.relay.address().to_string(),
             openmls_version: "0.8.1",
             app_version: env!("CARGO_PKG_VERSION"),
@@ -287,5 +324,70 @@ mod thread_safety {
             assert_send_future(pouch.send_message("", ""));
             assert_send_future(pouch.add_contact("", ""));
         }
+    }
+}
+
+#[cfg(test)]
+mod transport_switching {
+    use super::*;
+    use crate::transport::RelayConfig;
+
+    fn temp_db(name: &str) -> String {
+        std::env::temp_dir()
+            .join(format!(
+                "pouch-transport-switch-{name}-{}.db",
+                std::process::id()
+            ))
+            .to_string_lossy()
+            .to_string()
+    }
+
+    #[test]
+    fn a_freshly_created_pouch_reports_the_direct_route() {
+        let db = temp_db("direct-default");
+        let mut key = [0x42u8; 32];
+        let pouch = Pouch::create(
+            "Test",
+            &db,
+            &mut key,
+            RelayConfig::insecure_local("http://127.0.0.1:1"),
+        )
+        .expect("creates");
+        assert_eq!(pouch.current_route(), Route::Direct);
+        let _ = std::fs::remove_file(&db);
+    }
+
+    #[tokio::test]
+    async fn connect_tor_with_a_malformed_config_does_not_change_the_active_route() {
+        // A failed Tor connection attempt must not silently leave the client
+        // on some half-switched state, and it must never silently fall back
+        // to Direct pretending the user's chosen route was honored.
+        let db = temp_db("tor-fails-safe");
+        let mut key = [0x43u8; 32];
+        let mut pouch = Pouch::create(
+            "Test",
+            &db,
+            &mut key,
+            RelayConfig::insecure_local("http://127.0.0.1:1"),
+        )
+        .expect("creates");
+        assert_eq!(pouch.current_route(), Route::Direct);
+
+        let bad_tor_config = crate::transport::TorRelayConfig {
+            onion_host: "not a valid host\0".to_string(),
+            onion_port: 8443,
+            state_dir: std::env::temp_dir()
+                .join("pouch-transport-switch-tor-state")
+                .to_string_lossy()
+                .to_string(),
+        };
+        let result = pouch.connect_tor(bad_tor_config).await;
+        assert!(result.is_err());
+        assert_eq!(
+            pouch.current_route(),
+            Route::Direct,
+            "a failed Tor connection attempt must not change the active route"
+        );
+        let _ = std::fs::remove_file(&db);
     }
 }

@@ -1149,3 +1149,415 @@ open and unmet until video is supported; the phase gate itself does not.
 pipeline's metadata-stripping step. It is not a general "add an image
 library" precedent — anything that needs to decode or render pixel data
 (rather than edit a container's metadata segments) is a separate choice.
+
+---
+
+## D-039 — `arti` pinned at 0.43.0; workspace `rust-version` raised to 1.89
+**Date:** 2026-08-02 · **Status:** accepted — project owner approved 2026-08-02
+
+**The problem.** Phase 4 needs the Tor Project's own Rust implementation,
+`arti`, to run the relay as a v3 onion service (`tor-hsservice`) and to
+route the client's connection to it through Tor (`arti-client`). Checking
+crates.io metadata (2026-08-02) before pinning anything, as the workspace's
+own convention requires: the newest stable release of both crates,
+0.44.0 (2026-06-30), declares an MSRV of Rust 1.91 — well past this
+workspace's `rust-version = "1.82"` — and its docs.rs build (#3730389)
+failed outright, a caution sign independent of the MSRV question. Walking
+back through recent releases, 0.43.0's MSRV is 1.89 and it last built
+cleanly on docs.rs.
+
+**Decision.** Pin `arti-client = "=0.43.0"` and `tor-hsservice = "=0.43.0"`
+(plus `tor-rtcompat` at the matching version for the tokio runtime glue).
+Raise `rust-version` from `1.82` to `1.89` in both places it is declared
+(root `Cargo.toml` and `clients/desktop/src-tauri/Cargo.toml` — the latter
+sits outside the workspace and does not inherit the former, same reason
+the version-number convention in `docs/CONTEXT.md` calls out four files
+that move together). `tokio = "=1.53.1"`, already pinned, satisfies
+arti-client 0.43.0's own `^1.47.1` requirement without a bump.
+
+**Why this is not a bigger risk than it looks.** CI resolves its toolchain
+via `dtolnay/rust-toolchain@stable` in every job (`.github/workflows/*.yml`),
+not a pinned version, so it already builds with whatever is current —
+raising the declared floor does not risk breaking CI. It only raises what a
+from-source build documents as required, which was always going to move
+for *some* dependency eventually.
+
+**Rejected alternatives.**
+- *Pin an older arti release compatible with 1.82.* Rejected: that means
+  giving up several months of fixes in code whose entire job is anonymity
+  and correctness against a network adversary — the wrong place to save an
+  MSRV bump.
+- *Pin 0.44.0 anyway and bump to 1.91.* Rejected on the docs.rs build
+  failure alone, independent of the larger MSRV jump.
+
+**Scope note, stated rather than assumed away.** `tor-hsservice`'s own
+documentation describes itself as "a low-level implementation... that may
+not be suitable for typical users." Its onion-service-hosting API
+(`launch_onion_service`, `handle_rend_requests`, `StreamRequest`) is not
+behind an `experimental` Cargo feature and ships in the stable 0.43.0
+release, so it is being used through its intended interface per D-001's
+sibling rule against inventing constructions — but it is newer, less
+battle-tested code than `openmls` or `rusqlite`, and that is worth knowing
+rather than treating 0.43.0 as equivalent in maturity to this project's
+other pinned dependencies.
+
+**A related, non-cryptographic architecture consequence recorded here
+because it follows directly from this pin:** `reqwest` (already pinned,
+used by `RelayClient` for the direct-transport path) exposes no hook for a
+custom low-level connector, and `arti-client` 0.43.0 has no in-process SOCKS
+listener of its own — only the separate `arti` CLI binary runs one, which
+would mean shelling out to a subprocess and losing the "audited library
+through its intended interface" property this project holds to. The
+Tor-routed transport therefore is not built as a drop-in swap inside the
+existing `reqwest`-based `RelayClient`; it is a second implementation built
+directly on `hyper`/`hyper-util`, wrapping `TorClient::connect` in a small
+`tower::Service<Uri>` connector — the same low-level primitives the relay
+side needs anyway to bridge incoming onion-service streams into `axum`, so
+this adds one dependency category, not two.
+
+---
+
+## D-040 — `rusqlite` bumped 0.32.1 → 0.39.0 to resolve an arti-client conflict; two forced companion bumps
+**Date:** 2026-08-02 · **Status:** accepted — project owner approved 2026-08-02
+
+**The problem, found while executing D-039.** `arti-client =0.43.0`
+unconditionally depends on `tor-dirmgr =0.43.0` (needed to fetch and cache
+the Tor consensus — required to build *any* circuit, not only onion
+services), which unconditionally requires `rusqlite >=0.36.0,<0.40.0`,
+confirmed via crates.io's own dependency metadata (`optional: false`, no
+feature gate on either side — `tor-dirmgr`'s `static` feature only controls
+whether SQLite is bundled, not whether the dependency exists). This
+workspace's `rusqlite = "=0.32.1"` pin, in place since Phase 0/1 for the
+SQLCipher-encrypted local database and the relay's own store (D-019,
+D-024), cannot coexist with that range: both ultimately link the native
+`sqlite3` library through `libsqlite3-sys`, and Cargo hard-blocks two
+versions of a `links`-declaring crate in one build graph — not a version
+negotiation, a wall. Confirmed with the actual Cargo resolver error before
+concluding anything, not assumed from reading version ranges alone.
+
+**Decision.** Bump the workspace `rusqlite` pin to `=0.39.0` — inside
+`tor-dirmgr`'s required range, the newest 0.3x release, still ships
+`bundled-sqlcipher` (confirmed on crates.io before choosing it, same
+diligence D-038 applied to `img-parts`). This is the crate D-024's incident
+was about, so it was not changed without real verification: reproduced the
+conflict, applied the bump, and ran the **full existing test suite (163
+tests) to completion, green**, including the SQLCipher-specific tests (wrong
+key correctly refused, passphrase re-encryption, the runtime
+`PRAGMA cipher_version` guard) — not just a clean compile. Verified on the
+project's own Windows development environment, where SQLCipher/OpenSSL
+linkage has caused problems before (`docs/PROGRESS.md`'s Windows build
+notes).
+
+**Two forced companion bumps, both low-risk.** `rusqlite 0.39.0`'s own
+dependency tree (via a `sqlite-wasm-rs` entry, present regardless of target)
+requires `thiserror ^2.0.12`; separately, `arti-client`'s `tor-config` →
+`toml 1.0.3` chain requires `serde_core ^1.0.225`, which forces the paired
+`serde_derive` to the same version as `serde` itself. Bumped
+`thiserror = "=2.0.9"` → `"=2.0.19"` and `serde = "=1.0.216"` → `"=1.0.225"`.
+Neither is a security-relevant crate in the way `rusqlite` is; both are
+widely used, API-stable derive/error crates, and the full test suite passing
+after both bumps is the real evidence, not an assumption that "minor version
+bumps of popular crates are usually fine."
+
+**One forced code fix, not a design change.** `rusqlite 0.39.0` dropped its
+built-in `ToSql` implementation for raw `u64` — SQLite's native integer type
+is signed 64-bit, and the crate now requires an explicit cast rather than
+silently reinterpreting a `u64` as `i64`. `core/src/storage/` already cast
+explicitly everywhere (`as i64`) before this bump; `server/src/store.rs` had
+three call sites that did not, because they never needed to before. Fixed
+with the same `as i64` cast pattern already established in `core` — every
+value involved is a Unix timestamp or an expiry bucket, nowhere near
+`i64::MAX`, so the cast is lossless for every realistic input.
+
+**Rejected alternatives.**
+- *Restructure Tor networking behind a separate OS process, avoiding the
+  `rusqlite` conflict entirely by never linking `arti-client` into the same
+  binary as `core`.* Rejected for this decision specifically (though see the
+  note below): the `links` conflict applies to whatever gets linked into one
+  final binary, not to Cargo workspace or lockfile boundaries — if the same
+  executable still needs both `pouch-core` and an arti-wrapping crate as
+  direct or transitive Rust dependencies, the conflict recurs regardless of
+  which workspace member each lives in. A real fix along these lines would
+  need an actual IPC boundary between two OS processes, which is a
+  substantially larger architecture change than a dependency version bump,
+  and was not what was being decided here.
+- *Switch to the system `tor` daemon via its ControlPort instead of
+  `arti-client`.* A legitimate, more involved alternative — sidesteps the
+  Rust dependency graph entirely — but SPEC §3.2 names `arti` explicitly for
+  Phase 4 transport, so this would be a SPEC.md amendment, not a dependency
+  pin change, and a substantially larger rewrite of this plan's remaining
+  tasks. Not chosen; recorded here so it is not silently forgotten as an
+  option if `arti-client` causes further friction later in this phase.
+
+**What this does not open up.** This is a version bump of an
+already-audited, already-relied-upon crate, verified by the same test suite
+that already exists for it — not a new trust decision about SQLCipher or
+about how the local database is protected. D-019 and D-024's reasoning is
+otherwise unchanged.
+
+---
+
+## D-041 — Fixed-size padding extended to message payloads; wire-format break
+**Date:** 2026-08-02 · **Status:** accepted
+
+**Decision.** `core/src/padding.rs`'s fixed buckets (64 KB/256 KB/1 MB/4 MB/
+16 MB, then 16 MB increments — SPEC §7.1 step 3), already used for
+attachments since D-038, now also pad every message payload: compress → pad
+→ encrypt on send, decrypt → unpad → decompress on receive
+(`core/src/api/messaging.rs`). Manifest stage 4 (`PADDED`) reports `Ran` for
+every message from this build forward, matching stage 3's (`COMPRESSED`)
+D-036 precedent.
+
+**Three send paths, not two.** `send_message` and `send_payload` are the
+obvious ones. The third is easy to miss and was found by a failing test
+rather than by reading: `send_attachment` (`core/src/api/attachments.rs`)
+builds its own encrypt path inline rather than routing through
+`send_payload`, for the attachment *reference* message that names an
+uploaded bucket. Leaving it unpadded broke receiving outright — the receive
+side unpads unconditionally — but the quieter problem is the one that
+matters: an unpadded reference would have been the single odd-sized blob in
+a queue of bucketed ones, so its size alone would have signalled "an
+attachment was just sent." It is padded on the same terms as every other
+payload. It is deliberately *not* reported at manifest stage 4, because that
+stage already names the padding applied to the attachment content, which is
+the larger and more meaningful number for an attachment; reporting the
+reference's padding there instead would replace a true statement with a
+less useful true statement.
+
+**Why the smallest bucket (64 KB) for a short text message is not wasteful
+in the way it looks.** The relay already accepts blobs up to
+`MAX_BLOB_BYTES` (20 MB); the fixed buckets exist to blunt size
+fingerprinting, the same property D-038's attachment padding provides — a
+two-word reply and a paragraph both land in the 64 KB bucket if both compress
+under it, so an observer of blob size alone cannot distinguish message
+length classes. This is a bandwidth-for-metadata trade the project already
+made once for attachments; extending it to messages is the same trade, not
+a new one.
+
+**Wire compatibility, same reasoning as D-036.** A build from before this
+commit sends unpadded ciphertext; this build's `unpad` step will find no
+valid length prefix in an old peer's message and silently drop it, the same
+way an unrecognised payload already is (protocol noise or a version
+mismatch, not a message a user should see). Both sides of a conversation
+need to be this build or newer. This project has no live population of
+mismatched builds to protect, so a clean break is the honest choice over
+adding version-sniffing complexity to preserve compatibility nothing needs.
+
+**A test threshold moved, and it is worth knowing why.** SPEC §8.5's
+end-to-end test sorted attachment blobs from message blobs by size, at a
+10 KB threshold. With message payloads bucketed at 64 KB that no longer
+separates them, so the threshold is now 128 KB — between the 64 KB bucket
+messages land in and the 256 KB bucket the test's two attachments land in.
+The same test now also asserts that the message-payload blobs are
+identically sized to each other, which is the new property this decision
+introduces and was previously untested.
+
+**Rejected alternative.** A separate, message-specific bucket scheme rather
+than reusing the attachment one. Rejected: SPEC §7.1 already specifies one
+scheme, both message and attachment payloads are compact binary blobs by
+the time they reach padding, and a second scheme would be a second thing to
+get right for no stated benefit. The shared module now lives at
+`core/src/padding.rs`, moved out of `core/src/attachments/` in the same
+session — a mechanical relocation with no logic change.
+
+---
+
+## D-042 — `arti-client` needs `onion-service-client`; D-039's feature reasoning was wrong
+**Date:** 2026-08-09 · **Status:** accepted · **Amends:** D-039 (feature set only; the `=0.43.0` pin is unchanged)
+
+**Decision.** `arti-client`'s feature list gains `onion-service-client`
+alongside the `onion-service-service` D-039 already selected. No version
+changed.
+
+**What D-039 got wrong, and how it surfaced.** D-039's own Cargo.toml
+comment reasoned: "`onion-service-service` enables
+`TorClient::launch_onion_service` — the server side needs it; the client
+only needs `TorClient::connect`." The second half is false.
+`TorClient::connect` compiles and runs fine without `onion-service-client`
+— it simply *refuses `.onion` addresses at runtime*, with
+`Rejecting .onion address; feature onion-service-client not compiled in`.
+Since connecting to the relay's onion address is the entire point of the
+client-side Tor transport, every Tor send and receive would have failed in
+the field on a build that compiled cleanly, passed clippy, and passed the
+whole test suite.
+
+**Why nothing caught it earlier.** Nothing could have. The non-network unit
+test asserts a malformed hostname is rejected before bootstrapping, which is
+still true. The compile check passes because the feature gate is a runtime
+refusal, not a missing symbol. It took running a real circuit against the
+live Tor network — the `#[ignore]`d test in `core/src/transport/tor.rs`,
+run explicitly — to see it.
+
+**This is D-024's lesson, restated.** "A security control that fails
+silently is worse than one that is absent"; "anywhere the project depends on
+a library actually doing something, check that it did." D-024 was about
+`PRAGMA key` being silently ignored by a plain-SQLite build. This is the
+same shape: a dependency accepting a configuration and quietly not providing
+the capability. Both were invisible to unit tests and visible immediately on
+a real run.
+
+**Two things the same real run also corrected**, recorded here rather than
+left in the plan's history:
+- The plan's smoke test dialled
+  `sdscoq7snet5uu3d4mos4ecemqzfgm5oiqu35bwgqrp6irhaad4tkjqd.onion`, described
+  as "the Tor Project's own onion mirror." arti rejects it as
+  `Invalid onion address` — it is 56 characters, so it looks right, but it
+  fails v3 checksum validation. No third-party onion address is hard-coded
+  now: the ignored test asserts the bootstrap itself, and takes an optional
+  `POUCH_TEST_ONION=host:port` to dial a real one. The end-to-end check
+  belongs against this project's own relay-as-onion-service anyway.
+- The same test originally asserted `TorBackend::reachable()`, which polls
+  `/health` — a Pouch relay endpoint. A third-party onion service has no
+  reason to answer it, so the assertion was testing the wrong service's
+  routing table.
+
+**Measured.** A real bootstrap against the live Tor network from this
+Windows workstation takes roughly 7 seconds, cold. Recorded so a later
+timeout is chosen against a number rather than a guess.
+
+**What is still unproven.** That the `TorConnector`/`TorStream` path carries
+a full HTTP exchange over a circuit. Bootstrap is proven; the connector is
+not, until there is an onion service of this project's own to dial.
+
+*(Resolved later the same session — see D-043's verification note. The full
+path is now proven end to end.)*
+
+---
+
+## D-043 — Four dependencies the relay's onion service needed, and one crypto-provider choice
+**Date:** 2026-08-09 · **Status:** accepted
+
+**Decision.** Running the relay as a Tor v3 onion service required four
+additions to the pinned dependency set. Three are mechanical; the fourth is a
+real choice worth stating plainly.
+
+**`tor-cell =0.43.0`** — `StreamRequest::accept` takes a
+`tor_cell::relaycell::msg::Connected` and `tor-hsservice` does not re-export
+it. Already in the graph transitively at the same version; this only makes a
+direct use explicit and pinned.
+
+**`safelog =0.8.2`** — arti deliberately does *not* implement `Display` for
+an onion address. It redacts by default, precisely so a `.onion` cannot reach
+a log by accident. The relay has to print its own address for the operator to
+connect a client to it, which means calling `display_unredacted()` from this
+trait. Worth noting rather than papering over: this project made the same
+judgement about the same class of data in the opposite direction — the relay
+prints its bind address too, and neither is information about a *request*.
+
+**`rustls` bumped `=0.23.20` → `=0.23.43`, with the `ring` feature.** The old
+pin was dead — no workspace member named it, so the lock had already resolved
+0.23.43 transitively through arti. That mattered the moment the relay named
+rustls directly: keeping `=0.23.20` would have put two rustls versions in the
+graph, and a crypto provider installed into one version's registry does
+nothing for the other. It would have failed silently, which is the failure
+mode this project treats as worse than a loud one (D-024).
+
+**The choice: `ring` as the rustls crypto provider.** arti's `rustls` feature
+deliberately selects *no* provider — it leaves that to the application. `core`
+only worked by accident, because `reqwest` happens to pull rustls in with
+`ring`; the relay had no such accident and panicked at first TLS use with
+"could not automatically determine the process-level CryptoProvider". `ring`
+is chosen because it is already this project's provider, so this adds no new
+trusted code — the alternative, `aws-lc-rs`, would be a new C toolchain
+dependency and a new audit surface for no stated benefit.
+
+`server/src/main.rs` calls `install_default()` explicitly rather than relying
+on exactly-one-feature unification continuing to hold. Feature unification is
+a property of the whole graph, and the graph changes; an explicit install
+fails at a named line rather than as a panic deep inside a handshake.
+
+**Scope, stated because it is easy to overstate.** This is the TLS arti uses
+to reach the Tor network. It is not Pouch's message encryption, which is MLS
+(X25519 / Ed25519 / AES-128-GCM) and is unaffected by any of the above. A
+different provider here would change how arti talks to Tor directory servers
+and relays; it would not change a single byte of message crypto.
+
+**Verified, not assumed.** The relay was run as a real onion service and
+published a real v3 address. A client then bootstrapped its own Tor
+connection, dialled that address, and got a 200 from the relay's `/health`
+route — the complete path: circuit, `TorConnector`, `TorStream`, hyper,
+axum router, and back. This also closes the gap D-042 recorded as still
+unproven. The ignored test `a_real_tor_bootstrap_succeeds_against_the_live_network`
+now performs exactly this check when `POUCH_TEST_ONION` names a Pouch relay,
+and asserts bootstrap alone when it does not.
+
+
+
+---
+
+## D-044 — Cover traffic not built this phase; deferred as a stop-and-ask
+**Date:** 2026-08-09 · **Status:** accepted
+
+SPEC's Phase 4 scope line names "optional cover traffic" alongside fixed-size
+padding, but no section of SPEC specifies what shape it should take — how
+often, what size, what triggers it, or how a receiver distinguishes real
+traffic from cover traffic without that distinction itself leaking something.
+Inventing answers to those questions now would be exactly the class of
+decision SPEC §2.6 reserves for a stop-and-ask. "A task seems to require
+writing a new cryptographic construction" extends naturally to a new
+traffic-shaping protocol: the failure modes are the same category, just
+outside the AEAD.
+
+The specific trap worth naming, because it is not obvious: cover traffic that
+is distinguishable from real traffic is worse than no cover traffic. It adds
+cost and bandwidth while an observer filters it out, and it can make real
+traffic *easier* to identify by contrast. Getting that indistinguishability
+right is a design problem with published literature behind it, not something
+to improvise inside an implementation task.
+
+Phase 4's actual exit criteria (SPEC §9) do not require it: messaging over
+Tor end to end, no client IP in server state, `TOR` shown accurately in the
+Custody Strip, and sealed sender reporting as ran. All four ship without it.
+
+Cover traffic stays a tracked, open item. The project owner should specify its
+design — or explicitly decline it — before any implementation is attempted,
+the same way D-037 and D-038 required an explicit decision before the
+attachment pipeline's AEAD and metadata library choices were made rather than
+assumed.
+
+**Rejected: build something reasonable now and refine later.** A traffic
+pattern is observable from the moment it ships. Unlike an internal refactor, a
+wrong first version is not private — it is broadcast to every observer for as
+long as it runs, and changing it later is itself a distinguishable event.
+
+---
+
+## D-045 — Tor applies to every relay-facing command, not the two the plan named
+**Date:** 2026-08-09 · **Status:** accepted
+
+The Phase 4 plan wired the CLI's Tor opt-in into `send` and `receive`, on the
+reasoning that those are the two commands the phase's exit criterion needs to
+demonstrate. Reading the CLI showed four commands reach the relay, not two:
+`add` uploads an MLS Welcome and `send-file` uploads an attachment. Only
+`backup import` is genuinely local despite being `async` — it decrypts a file
+and writes to the local store.
+
+Wiring half of them would have produced a specific, quiet failure: a user who
+set `POUCH_RELAY_TOR_ONION`, then ran `pouch-cli add`, would have handed their
+IP address to the relay at the exact moment they were establishing who they
+talk to — while every later `send` truthfully reported `TOR`. Nothing would
+have been lying; the manifest would have been accurate about each message.
+The user's belief about their own exposure would simply have been wrong, which
+is the shape D-024 describes and the reason Prime Directive 3 exists.
+
+**The fix is structural rather than repeated.** `config::open_for_relay()` is
+the single place that decides, and all four commands open through it. Four
+copies of the same two-line conditional is four places for a fifth network
+command to be forgotten; one helper means a new command inherits Tor by
+construction. Commands that only read local state still call `Pouch::open`
+directly and stay instant, because a Tor bootstrap on `pouch-cli list` would
+be a cost with no matching benefit.
+
+**The environment-variable contract moved into the core**, as
+`TorRelayConfig::from_env(default_state_dir)`. Two clients spelling
+`POUCH_RELAY_TOR_ONION` separately is two chances to drift, and a client that
+reads a name the operator does not set fails by silently staying on the direct
+route — again silent, again the wrong direction. The core defines the names;
+the caller supplies only the fallback state directory, because where a host
+application keeps its data is not something a library can know. The library
+never calls this itself: whether a deployment takes configuration from the
+environment at all stays the host's decision.
+
+**Rejected: follow the plan literally and note the gap.** A known partial
+protection, documented but shipped, is the thing this project has repeatedly
+decided not to do. The cost of the wider fix was one helper function.

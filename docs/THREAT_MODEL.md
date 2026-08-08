@@ -61,9 +61,10 @@ anything here with anything that matters.
 | **Coercion of a participant** — rubber-hose, subpoena against a user, a border officer demanding an unlock | Out of technical scope. Disappearing messages reduce how much exists to be surrendered. They do not help against coercion applied before the timer expires. |
 | **A malicious recipient** screenshotting, forwarding, or simply repeating what they read | Inherent to any system a human can read. No product solves this, and any product claiming to is lying. |
 | **Targeted supply-chain attack** on a pinned dependency | Exact version pinning and `cargo audit` reduce exposure to *known* vulnerabilities and to surprise upgrades. Neither detects a deliberate backdoor in a dependency that has not been discovered yet. Pouch has no reproducible-build story yet. |
-| **Traffic analysis of message frequency** over a long observation window | Padding blunts size. It does nothing about how often a user connects. Cover traffic is a Phase 4 option, not a default. |
+| **Traffic analysis of message frequency** over a long observation window | Padding blunts size. It does nothing about how often a user connects. Cover traffic was named in Phase 4's scope and was **not built** — SPEC does not specify its shape, and an improvised version an observer can distinguish is worse than none. Deferred pending an explicit design decision (D-044). |
 | **A compromised OS keystore** or a platform-level backdoor | Pouch trusts the keystore. If the keystore lies, the local database key is exposed. |
 | **A known deviation from RFC 9180 in the HPKE backend** | The `hpke-rs` version that `openmls` pins does not check that an X25519 Diffie-Hellman shared secret is non-zero, which RFC 9180 requires (RUSTSEC-2026-0072). The fix exists upstream in a release `openmls` cannot yet use. Recorded rather than hidden; full reasoning in `DECISIONS.md` D-030. |
+| **A defect in the Tor implementation itself** | From Phase 4 the relay hosts a v3 onion service through `tor-hsservice`, whose own documentation describes its hosting API as "a low-level implementation that may not be suitable for typical users". The arti family is actively developed and is younger, less battle-tested code than `openmls` or `rusqlite` — and considerably younger than the C Tor daemon it reimplements. Chosen anyway (D-039) because the alternative was shelling out to a separate process, but the maturity difference is real and belongs here rather than in a footnote. A defect here would affect IP exposure and reachability; it would not touch message confidentiality, which is MLS and independent of the transport. |
 | **Denial of service** — the relay refusing to accept or deliver | The relay is trusted for availability and for nothing else. A hostile operator can stop messages. It cannot read them. |
 
 ## 5. Metadata: three honest tiers
@@ -89,10 +90,16 @@ Never exists in a form the relay can read, at any point:
 Exists, but blunted:
 
 - **Message size** — padded into fixed buckets, so a 70 KB file and a 200 KB
-  file produce identically sized blobs.
-- **Client IP address** — visible to the relay in Phases 1–3. Eliminated with
-  respect to the relay from Phase 4 via onion service. Still visible to the
-  local network operator and to the Tor guard node, always.
+  file produce identically sized blobs. From Phase 4 this covers message
+  payloads too, not attachments alone (D-041).
+- **Client IP address** — visible to the relay in Phases 1–3. From Phase 4,
+  eliminated with respect to the relay **when Tor is selected**, and still
+  exposed on the direct route, which remains available and remains a choice
+  the user can make. This is deliberately not stated as "IP address hidden":
+  which of the two is true depends on the transport in use at that moment, and
+  the interface reports the actual route rather than the available one. Even
+  over Tor, the local network operator and the Tor guard node retain partial
+  visibility, always.
 - **Existence of an account** — the relay knows some inbox identifier is being
   polled. It does not know whose.
 - **Rough activity volume** — how much traffic an inbox sees.
@@ -105,6 +112,11 @@ Present, unmitigated, and worth understanding before relying on this:
   an adversary watching both endpoints.
 - **Total traffic volume** over a long observation period.
 - **The fact that Tor is in use**, visible to the user's ISP.
+- **Traffic patterns over time.** Cover traffic was named in Phase 4's scope
+  and deliberately not built — SPEC does not specify its shape, and an
+  improvised version that an observer can distinguish from real traffic is
+  worse than none at all. Deferred pending an explicit design decision
+  (D-044).
 
 ## 6. Honest positioning
 
@@ -118,7 +130,11 @@ Where Pouch differs is **policy and metadata**:
 
 - No phone number or email required to create an account
 - Self-hostable relay
-- Tor as the default transport from Phase 4, not an option buried in settings
+- Tor available as a transport from Phase 4, chosen on a settings screen that
+  states what each route costs rather than marking one "secure". It is **not**
+  the default: the direct route is what a fresh install uses, and Tor is opted
+  into. An earlier version of this file called Tor the default transport,
+  which the code does not support and this line corrects.
 - Local-only storage by default, with no server-side backup feature at all
 - User-held backup keys
 - A published threat model — this file
@@ -138,3 +154,4 @@ adversary, that difference outweighs every policy advantage listed above.
 |---|---|
 | 0 | Initial model written from the specification. No code paths exist yet, so nothing here is yet verified by a running test. |
 | 1 | Relay blindness now verified by an automated test against a real conversation, not asserted. Local storage encryption verified by reading the database file. Added the RFC 9180 deviation above, found by `cargo audit` — an unfixable-for-now advisory in a dependency is part of the threat model, not a CI nuisance. |
+| 4 | Client IP moves from "reduced but present" to route-conditional: eliminated with respect to the relay over Tor, still exposed on the direct route. Stated that way rather than as a blanket claim, because which is true depends on the transport in use. Verified end to end against the live Tor network — a real v3 onion address published, dialled from a separate client, answered. Padding extended from attachments to every message payload (D-041). Cover traffic named in scope and deliberately not built (D-044) — recorded in two places above rather than quietly dropped. Added the `tor-hsservice` maturity caveat: a newer, less battle-tested dependency than the rest of the stack, accepted knowingly. Corrected a claim in §6 that called Tor the default transport; it is opt-in. |

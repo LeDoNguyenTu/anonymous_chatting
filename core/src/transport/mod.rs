@@ -6,10 +6,16 @@
 //! nothing until MLS has authenticated them.
 //!
 //! Phase 1 is direct TLS with the relay certificate pinned by SPKI hash
-//! (D-017). Tor arrives in Phase 4; the `Route` type already names it so the
-//! Custody Strip and the manifest have something honest to report meanwhile.
+//! (D-017). Phase 4 adds Tor (`tor` submodule) as a second, additive backend
+//! — `RelayClient` picks between them at construction time and reports which
+//! one it is actually using via [`RelayClient::route`], which the manifest
+//! and the Custody Strip both read rather than assuming.
+
+pub mod tor;
 
 use serde::{Deserialize, Serialize};
+
+pub use tor::TorRelayConfig;
 
 /// How a message reached, or will reach, the relay.
 ///
@@ -20,7 +26,7 @@ use serde::{Deserialize, Serialize};
 pub enum Route {
     /// Straight to the relay over TLS 1.3. The relay sees the client's IP.
     Direct,
-    /// Through a Tor onion circuit. Not implemented until Phase 4.
+    /// Through a Tor onion circuit. The relay never learns the client's IP.
     Tor,
     /// No connection. Messages are queued locally.
     Offline,
@@ -33,6 +39,24 @@ impl Route {
             Route::Direct => "DIRECT",
             Route::Tor => "TOR",
             Route::Offline => "OFFLINE",
+        }
+    }
+
+    /// The same route written as a title rather than a status token.
+    ///
+    /// [`Route::label`] is deliberately shouted: in the Custody Strip it is a
+    /// state readout sitting beside `VERIFIED` and `KEY CHANGED`, and it
+    /// should read like one. A settings screen offering a choice is not a
+    /// status readout, and setting it in the same capitals would make picking
+    /// a transport look like an alarm.
+    ///
+    /// Both spellings live here rather than in each client so a screen cannot
+    /// invent its own name for a route the manifest calls something else.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Route::Direct => "Direct",
+            Route::Tor => "Tor",
+            Route::Offline => "Offline",
         }
     }
 
@@ -83,6 +107,12 @@ pub enum TransportError {
     /// The blob exceeded what the relay accepts.
     #[error("this message is too large for the relay to accept")]
     TooLarge,
+    /// Bootstrapping a Tor connection failed — no consensus reachable, no
+    /// circuit could be built, or the onion address could not be resolved.
+    /// Distinct from `Unreachable`, which means a specific relay did not
+    /// answer; this means Tor itself never got going.
+    #[error("could not establish a Tor connection: {0}")]
+    TorBootstrapFailed(String),
 }
 
 /// A blob waiting in an inbox.
@@ -157,14 +187,28 @@ impl RelayConfig {
     }
 }
 
+/// The two ways `RelayClient` can actually reach a relay.
+///
+/// The Tor variant is boxed because it is substantially larger than the
+/// `reqwest` client — an unboxed enum would make every direct-transport
+/// `RelayClient` pay for the Tor backend's size.
+enum Backend {
+    Direct(reqwest::Client),
+    Tor(Box<tor::TorBackend>),
+}
+
 /// A client for one relay.
 pub struct RelayClient {
-    config: RelayConfig,
-    http: reqwest::Client,
+    /// Human-readable address for display in the manifest, Custody Strip,
+    /// and Security details — an `https://` URL for Direct, `onion:port` for
+    /// Tor.
+    address: String,
+    route: Route,
+    backend: Backend,
 }
 
 impl RelayClient {
-    /// Builds a client.
+    /// Builds a direct-transport client.
     ///
     /// **Refuses to build an unpinned client for a non-loopback address.** An
     /// unpinned TLS connection to a remote relay relies on the public CA
@@ -182,25 +226,62 @@ impl RelayClient {
             .build()
             .map_err(|_| TransportError::Unreachable(config.base_url.clone()))?;
 
-        Ok(Self { config, http })
+        Ok(Self {
+            address: config.base_url,
+            route: Route::Direct,
+            backend: Backend::Direct(http),
+        })
+    }
+
+    /// Builds a Tor-transport client, bootstrapping a Tor connection.
+    ///
+    /// This is async and can take real time — Tor bootstrap means fetching a
+    /// consensus and building a first circuit, not a local operation. See
+    /// [`tor::TorBackend::connect`] for the implementation.
+    pub async fn connect_tor(config: TorRelayConfig) -> Result<Self, TransportError> {
+        let address = format!("{}:{}", config.onion_host, config.onion_port);
+        let backend = tor::TorBackend::connect(config).await?;
+        Ok(Self {
+            address,
+            route: Route::Tor,
+            backend: Backend::Tor(Box::new(backend)),
+        })
     }
 
     /// The relay address, for display in the manifest and Custody Strip.
     pub fn address(&self) -> &str {
-        &self.config.base_url
+        &self.address
+    }
+
+    /// Which route this client actually uses. Read by the manifest and the
+    /// Custody Strip instead of either assuming Direct or reconstructing it
+    /// from the address string.
+    pub fn route(&self) -> Route {
+        self.route
     }
 
     /// Posts a blob to an inbox. Returns the relay's identifier for it.
     pub async fn send(&self, inbox_id: &str, blob: &[u8]) -> Result<String, TransportError> {
-        let url = format!("{}/inbox/{inbox_id}", self.config.base_url);
+        match &self.backend {
+            Backend::Direct(http) => self.send_direct(http, inbox_id, blob).await,
+            Backend::Tor(tor_backend) => tor_backend.send(inbox_id, blob).await,
+        }
+    }
 
-        let response = self
-            .http
+    async fn send_direct(
+        &self,
+        http: &reqwest::Client,
+        inbox_id: &str,
+        blob: &[u8],
+    ) -> Result<String, TransportError> {
+        let url = format!("{}/inbox/{inbox_id}", self.address);
+
+        let response = http
             .post(&url)
             .body(blob.to_vec())
             .send()
             .await
-            .map_err(|_| TransportError::Unreachable(self.config.base_url.clone()))?;
+            .map_err(|_| TransportError::Unreachable(self.address.clone()))?;
 
         let status = response.status();
         if status == reqwest::StatusCode::PAYLOAD_TOO_LARGE {
@@ -225,16 +306,26 @@ impl RelayClient {
 
     /// Collects what is waiting for an inbox, without erasing it.
     pub async fn collect(&self, inbox_id: &str) -> Result<Vec<Envelope>, TransportError> {
+        match &self.backend {
+            Backend::Direct(http) => self.collect_direct(http, inbox_id).await,
+            Backend::Tor(tor_backend) => tor_backend.collect(inbox_id).await,
+        }
+    }
+
+    async fn collect_direct(
+        &self,
+        http: &reqwest::Client,
+        inbox_id: &str,
+    ) -> Result<Vec<Envelope>, TransportError> {
         use base64::Engine as _;
 
-        let url = format!("{}/inbox/{inbox_id}", self.config.base_url);
+        let url = format!("{}/inbox/{inbox_id}", self.address);
 
-        let response = self
-            .http
+        let response = http
             .get(&url)
             .send()
             .await
-            .map_err(|_| TransportError::Unreachable(self.config.base_url.clone()))?;
+            .map_err(|_| TransportError::Unreachable(self.address.clone()))?;
 
         if !response.status().is_success() {
             return Err(TransportError::Rejected(response.status().as_u16()));
@@ -282,8 +373,19 @@ impl RelayClient {
         if message_ids.is_empty() {
             return Ok(0);
         }
+        match &self.backend {
+            Backend::Direct(http) => self.acknowledge_direct(http, inbox_id, message_ids).await,
+            Backend::Tor(tor_backend) => tor_backend.acknowledge(inbox_id, message_ids).await,
+        }
+    }
 
-        let url = format!("{}/inbox/{inbox_id}/ack", self.config.base_url);
+    async fn acknowledge_direct(
+        &self,
+        http: &reqwest::Client,
+        inbox_id: &str,
+        message_ids: &[String],
+    ) -> Result<usize, TransportError> {
+        let url = format!("{}/inbox/{inbox_id}/ack", self.address);
 
         #[derive(Serialize)]
         struct Ack<'a> {
@@ -294,13 +396,12 @@ impl RelayClient {
             erased: usize,
         }
 
-        let response = self
-            .http
+        let response = http
             .post(&url)
             .json(&Ack { message_ids })
             .send()
             .await
-            .map_err(|_| TransportError::Unreachable(self.config.base_url.clone()))?;
+            .map_err(|_| TransportError::Unreachable(self.address.clone()))?;
 
         if !response.status().is_success() {
             return Err(TransportError::Rejected(response.status().as_u16()));
@@ -315,10 +416,15 @@ impl RelayClient {
     }
 
     /// Whether the relay answers at all. Drives the Custody Strip's transport
-    /// field between `DIRECT` and `OFFLINE`.
+    /// field between the configured route and `OFFLINE`.
     pub async fn reachable(&self) -> bool {
-        let url = format!("{}/health", self.config.base_url);
-        matches!(self.http.get(&url).send().await, Ok(r) if r.status().is_success())
+        match &self.backend {
+            Backend::Direct(http) => {
+                let url = format!("{}/health", self.address);
+                matches!(http.get(&url).send().await, Ok(r) if r.status().is_success())
+            }
+            Backend::Tor(tor_backend) => tor_backend.reachable().await,
+        }
     }
 }
 
@@ -410,5 +516,12 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_freshly_built_direct_client_reports_the_direct_route() {
+        let client =
+            RelayClient::new(RelayConfig::insecure_local("http://127.0.0.1:8443")).expect("builds");
+        assert_eq!(client.route(), Route::Direct);
     }
 }

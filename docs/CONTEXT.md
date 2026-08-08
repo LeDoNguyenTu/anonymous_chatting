@@ -150,23 +150,57 @@ message, attachment encryption never touches the MLS ratchet, so a manual
 retry has none of the cost D-028 built the message-retry queue to avoid —
 see `docs/PROGRESS.md`'s Phase 3 section for the full reasoning).
 
-163 Rust tests and 36 frontend tests pass, verified locally on Windows; the
-Phase 2, initial-compression, and desktop-backup-UI commits are confirmed
-green via `gh run list`. The attachment pipeline and desktop attachment UI
-commits have not yet been observed going green in GitHub Actions — confirm
-before trusting them the way Phase 0/1's "CI green" was trusted. Anything
-that touches a screen (backup, attachments) has also never been seen in a
-running window — this environment cannot launch the Tauri shell — so
-"verified" for those means build/typecheck/test only, not a GUI
-click-through. One CSP change shipped blind for exactly this reason:
-`tauri.conf.json`'s `img-src`/`default-src` now allow `blob:` so an
-`<img>` tag and the backup screen's download link can use object URLs —
-correct on paper, unverified in a real window.
+**Phase 4 (Tor transport, then sealed sender) is complete** and meets its
+exit criteria. The relay can run as a Tor v3 onion service
+(`server/src/onion.rs`, opt-in via `POUCH_RELAY_TOR_STATE`); the client
+reaches it through `arti-client` + `hyper` (`core/src/transport/tor.rs`,
+because `reqwest` has no custom-connector hook); message payloads are now
+padded into the same fixed buckets attachments already used (D-041); the
+manifest's sealed-sender stage reports per route rather than
+unconditionally; and there is a Transport settings screen (SPEC §6.7.9).
+Tor is **opt-in**, not the default — the direct route is what a fresh
+install uses. On the CLI, setting `POUCH_RELAY_TOR_ONION` routes *every*
+relay-facing command (`add`, `send`, `send-file`, `receive`) through it,
+via one helper, because covering only some of them would expose the IP at
+the moments it was not covered (D-045).
 
-The version number moved to `0.1.1`, then `0.1.2`, this session — bump it
-after each phase or critical fix from here on (project owner instruction,
-see the conventions list above for the four files that have to move
-together).
+This was verified against the **live** Tor network: a real v3 onion address
+published, dialled from a separate client, answering `/health`. Two bugs
+found that way had compiled clean and passed the whole suite — a missing
+`onion-service-client` feature (D-042) and a dead `rustls` pin (D-043),
+both the D-024 pattern of a dependency quietly not providing what it was
+configured for.
+
+**One thing is deliberately absent: cover traffic.** SPEC names it in Phase
+4's scope; it was not built, and that is recorded as D-044 rather than left
+as a gap. SPEC does not specify its shape, and cover traffic an observer can
+distinguish from real traffic is worse than none. It needs a design decision
+from the project owner before anyone implements it.
+
+The work is on branch `phase-4-tor-sealed-sender` (worktree
+`.worktrees/phase-4-tor/`, pushed to origin), **not yet merged to
+`develop`**.
+
+177 Rust tests and 44 frontend tests pass, verified locally on Windows, with
+CI green on the branch. **Nothing that touches a screen has ever been seen in
+a running window** — this environment cannot launch the Tauri shell — so
+"verified" for the Transport settings screen, the backup screen, and the
+attachment UI means build, typecheck, and `renderToStaticMarkup` assertions
+only, never a GUI click-through. The desktop client has also never talked to
+a relay over Tor; the path beneath it is the same one the CLI and the
+live-network test exercise, but that specific run was not made. One CSP
+change shipped blind for the same reason: `tauri.conf.json`'s
+`img-src`/`default-src` now allow `blob:` so an `<img>` tag and the backup
+screen's download link can use object URLs — correct on paper, unverified in
+a real window.
+
+One open watch item: `two_clients_exchange_text_and_the_relay_learns_nothing`
+failed once during Phase 4 and never reproduced. If CI hits it, capture the
+assertion text before doing anything else.
+
+The version number is `0.1.3` — bump it after each phase or critical fix
+(project owner instruction, see the conventions list above for the four
+files that have to move together).
 
 Full detail, the runnable demo, the manual checks still owed, and the ordered
 list of what is next are in `docs/PROGRESS.md`. Read that before starting work.

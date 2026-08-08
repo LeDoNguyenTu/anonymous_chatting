@@ -3,7 +3,7 @@
 use anyhow::{bail, Context, Result};
 use pouch_core::Pouch;
 
-use crate::config::{db_key, db_path, relay};
+use crate::config::{db_key, db_path, open_for_relay, relay};
 
 /// `pouch-cli send-file <conversation> <path>`
 pub async fn send_file(args: &[String]) -> Result<()> {
@@ -20,8 +20,7 @@ pub async fn send_file(args: &[String]) -> Result<()> {
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.clone());
 
-    let mut key = db_key()?;
-    let mut pouch = Pouch::open(&db_path(), &mut key, relay())?;
+    let mut pouch = open_for_relay().await?;
 
     let manifest = pouch
         .send_attachment(conversation, &filename, &bytes)

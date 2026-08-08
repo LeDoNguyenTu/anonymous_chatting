@@ -16,7 +16,7 @@
 
 /// The only surface clients touch.
 pub mod api;
-/// Attachment pipeline: per-file keys, metadata stripping, padding (Phase 3).
+/// Attachment pipeline: per-file keys, metadata stripping (Phase 3).
 pub mod attachments;
 /// MLS integration, identity keys, safety numbers (Phase 1).
 pub mod crypto;
@@ -24,6 +24,9 @@ pub mod crypto;
 pub mod keying;
 /// The per-message record of what actually happened (SPEC §6.5).
 pub mod manifest;
+/// Fixed-size padding buckets, shared by attachments and message payloads
+/// (SPEC §7.1 step 3, Phase 3 and Phase 4).
+pub mod padding;
 /// SQLCipher access, retention, backup (Phase 1–2).
 pub mod storage;
 /// TLS with SPKI pinning, offline queue, Tor (Phase 1 and 4).

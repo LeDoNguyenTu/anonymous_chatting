@@ -14,7 +14,6 @@ use crate::attachments;
 use crate::crypto::{CryptoError, AEAD_NAME, CIPHERSUITE_NAME, KEY_AGREEMENT_NAME, SIGNATURE_NAME};
 use crate::manifest::Manifest;
 use crate::storage::{Direction, QueuedMessage, StoredAttachment, StoredMessage};
-use crate::transport::Route;
 
 use super::compression;
 use super::{now, ApiError, Payload, Pouch};
@@ -87,12 +86,21 @@ impl Pouch {
         };
         let encoded = serde_json::to_vec(&reference).map_err(|_| CryptoError::Encryption)?;
         let compressed = compression::compress(&encoded).map_err(|_| CryptoError::Encryption)?;
+        // The reference travels as an ordinary message payload, so it gets the
+        // same compress → pad → encrypt treatment every other payload does
+        // (D-041). Not reported at manifest stage 4: that stage already names
+        // the padding applied to the attachment *content*, which is the larger
+        // and more meaningful number for an attachment. Skipping this pad
+        // would leave the reference as the one unpadded blob on the wire —
+        // recognisable by size, which is the exact fingerprint padding exists
+        // to remove.
+        let padded = crate::padding::pad(&compressed);
 
         let conversation = self
             .conversations
             .get_mut(conversation_id)
             .ok_or(ApiError::UnknownConversation)?;
-        let blob = conversation.encrypt(&self.identity, &compressed, &self.provider)?;
+        let blob = conversation.encrypt(&self.identity, &padded, &self.provider)?;
         manifest.encrypted(
             CIPHERSUITE_NAME,
             AEAD_NAME,
@@ -135,7 +143,11 @@ impl Pouch {
             }
         };
 
-        manifest.routed(Route::Direct, self.relay.address());
+        // Same pattern as `send_message`: one route value shared by stages 6
+        // and 7, so the two can never disagree about how this went out.
+        let route = self.relay.route();
+        manifest.routed(route, self.relay.address());
+        manifest.sealed(route);
         manifest.queued(&message_id);
         manifest.delivered();
 

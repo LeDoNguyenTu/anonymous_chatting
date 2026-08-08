@@ -648,6 +648,10 @@ Relay as an onion service. `arti` embedded in core. Transport settings screen. F
 
 **Exit:** messaging works end to end over Tor; server state confirmed to contain no client IP; Custody Strip shows `TOR` accurately; manifest stage 6 (`SENDER SEALED`) reports as ran rather than not yet implemented.
 
+**Cover traffic, named in this phase's scope line above, is not part of its exit criteria and was not built** — decided 2026-08-09, D-044. SPEC does not specify its shape (frequency, size, trigger, or how a receiver tells it apart from real traffic without that distinction itself leaking), and inventing one without that specification is the same class of undesignated construction §2.6 reserves for a stop-and-ask. Cover traffic an observer can distinguish from real traffic is worse than none: it costs bandwidth while being filtered out, and can make real traffic easier to spot by contrast. Tracked as an open item pending an explicit design decision from the project owner.
+
+**Tor is opt-in, not the default.** A fresh install uses the direct route and the user chooses Tor on the Transport settings screen (§6.7.9), which states what each route costs rather than marking one secure. Every command that reaches the relay honours that choice together — on the CLI that is `add`, `send`, `send-file` and `receive`, not the send path alone (D-045).
+
 ### Phase 5 — Android client (≈4+ weeks)
 Core compiled for Android via JNI. Kotlin and Compose UI mirroring the desktop feature set and design system. Keystore integration. Signed APK.
 

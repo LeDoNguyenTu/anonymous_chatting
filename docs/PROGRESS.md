@@ -12,13 +12,13 @@ Do not begin a phase before the previous phase meets its exit criteria.
 
 | | |
 |---|---|
-| **Phase complete** | 0 — Foundation · 1 — Working 1:1 encrypted chat · 2 — Storage control and hardening, **fully** |
-| **Phase next** | 3 — Attachments and compression. Meets its exit criteria: compression, backup, and the attachment pipeline (strip images only — D-038, pad, encrypt, upload) are all done in `core`, the CLI, **and the desktop client**. Two things remain, both stated rather than hidden: SPEC §6.7.8's *dedicated pre-send* preview screen is not built (the same manifest information shows *after* sending instead, see below), and offline-queue retry for a failed attachment blob upload was looked at and deliberately not built — see the reasoning in the attachments section below. Neither is part of the phase's own exit criterion. |
-| **Branches** | `main` (repository default) and `develop`, both pushed; `main` intentionally left behind `develop` — see the note in this section's history for why |
-| **Blocked on** | Nothing. What remains for Phase 3 (above) is scoped and intentional, not blocked. Phase 4's Tor-dependent sealed sender is next: this relay's wire protocol already carries no sender field, so the only remaining "who sent this" signal is the TCP/TLS source IP a direct connection necessarily exposes, which only Tor closes. |
-| **Tests** | 134 Rust core + 13 end-to-end + 12 relay + 4 server-blindness = 163 Rust · 36 frontend |
-| **CI** | confirmed green via `gh run list` for the Phase 2, initial Phase 3 (compression), and desktop-backup-UI commits. The attachment pipeline commit (core+CLI) and the desktop attachment UI commit are verified locally the same way (fmt, clippy -D warnings, full test suite, both guardrail scripts) but not yet confirmed in Actions at last check — confirm before trusting them the same way. Anything that touches a screen (backup, attachments) has never been seen in a running GUI window — this environment cannot launch the Tauri shell — so "verified" for those means build/typecheck/test only. |
-| **Version** | `0.1.2`, bumped twice this session (`0.1.0` → `0.1.1` → `0.1.2`) per the project owner's instruction to bump after each phase or critical fix (2026-08-02). Four files move together — see `docs/CONTEXT.md`'s conventions list. |
+| **Phase complete** | 0 — Foundation · 1 — Working 1:1 encrypted chat · 2 — Storage control and hardening · 3 — Attachments and compression · 4 — Tor transport and sealed sender, all **fully**. Phase 4's exit criteria are met and were verified against the live Tor network, not asserted — see that phase's section below for exactly what was run and what was not. |
+| **Phase next** | 5 — Android client. Not started. |
+| **Branches** | `main` (repository default) and `develop`, both pushed; `main` intentionally left behind `develop` — see the note in this section's history for why. `phase-4-tor-sealed-sender` holds all Phase 4 work, pushed to origin. **Not yet merged to `develop`** — it merges by fast-forward once its final review is clean, per `superpowers:finishing-a-development-branch`. The worktree is `.worktrees/phase-4-tor/`. |
+| **Blocked on** | Nothing. One open *design* item, deliberately deferred rather than blocked: cover traffic (D-044) needs a specification from the project owner before anyone implements it. |
+| **Tests** | 145 Rust core + 14 end-to-end + 14 relay + 4 server-blindness = **177 Rust** (1 ignored — the live-Tor test, which needs real network access and is run by hand) · **44 frontend**. Was 163 Rust / 36 frontend at the start of Phase 4. |
+| **CI** | green on `phase-4-tor-sealed-sender` through commit `2a52a71`, confirmed via `gh run list`. Everything below was also verified locally: `cargo fmt --check`, `clippy -D warnings`, the full suite, both guardrail scripts, `cargo audit`, the desktop crate's own `cargo check --all-targets --locked`, and the frontend's typecheck/test/build. **The Tauri window has still never been launched** — this environment cannot run a GUI — so every claim about how a screen *looks* rests on build, typecheck, and `renderToStaticMarkup` assertions, not on anyone seeing it. |
+| **Version** | `0.1.3`, bumped at Phase 4 close-out per the project owner's instruction to bump after each phase or critical fix. Four files move together — see `docs/CONTEXT.md`'s conventions list. |
 
 ### Owed to the project owner
 
@@ -712,6 +712,125 @@ process itself created.
   includes confirming the CSP change above actually lets an attachment
   image render in a real WebView2/WebKitGTK window, not just that it
   typechecks.
+
+---
+
+## Phase 4 — Tor transport, then sealed sender · complete · 2026-08-09
+
+Exit criteria met, and the important ones were verified against the live Tor
+network rather than asserted. What was *not* verified is stated at the end of
+this section rather than left for someone to discover.
+
+**Where the work lives.** Worktree `.worktrees/phase-4-tor/`, branch
+`phase-4-tor-sealed-sender` (branched from `develop` at `dd3eaa2`, pushed to
+origin, not yet merged). The 14-task plan is
+`docs/superpowers/plans/2026-08-02-phase-4-tor-and-sealed-sender.md`; the SDD
+ledger beside it in `.superpowers/sdd/` records per-task findings and is
+gitignored, so it exists only in that worktree.
+
+### What shipped
+
+- **Relay as a Tor v3 onion service** (`server/src/onion.rs`), opt-in via
+  `POUCH_RELAY_TOR_STATE`. The direct listener is untouched; both serve the
+  same `axum::Router`. A failed onion launch is printed, not swallowed — an
+  operator who asked for one and silently got only the direct listener would
+  believe they had a protection they do not have.
+- **Tor-routed client transport** (`core/src/transport/tor.rs`) on
+  `arti-client` + `hyper`, because `reqwest` has no custom-connector hook and
+  arti has no in-process SOCKS listener.
+- **`Pouch::connect_tor` / `use_direct_relay`**, with `current_route()` feeding
+  the manifest, the Custody Strip, and `RelayVisibility`. `connect_tor` never
+  falls back to Direct on failure.
+- **Message payloads padded** into the same fixed buckets attachments already
+  used (D-041). This is a wire-format break; there is no deployed population to
+  migrate.
+- **Manifest stage 4 (`PADDED`) and stage 6 (`SENDER SEALED`) now report
+  honestly per route.** Over Tor, stage 6 reads as ran; on the direct route it
+  reads not-applicable *with the reason*, rather than disappearing.
+- **`RelayVisibility` is route-aware.** Over Tor the IP exposure moves
+  explicitly into `not_visible` rather than vanishing from the list, and
+  `still_inferable` gains "that you are using Tor" plus the guard-node note.
+- **CLI over Tor**, covering every relay-facing command — `add`, `send`,
+  `send-file`, `receive` — through one `config::open_for_relay()` helper
+  (D-045).
+- **Desktop Transport settings screen** (SPEC §6.7.9) plus the three commands
+  behind it, and `src/lib/fakeBridge.ts`, this project's first reusable test
+  fake for `PouchBridge`.
+
+### What was decided
+
+| | |
+|---|---|
+| D-039 | `arti` pinned at 0.43.0; workspace `rust-version` raised to 1.89. |
+| D-040 | `rusqlite` 0.32.1 → 0.39.0 to resolve a real arti conflict, plus two forced companion bumps. |
+| D-041 | Fixed-size padding extended to message payloads; wire-format break. |
+| D-042 | `arti-client` needs the `onion-service-client` feature. D-039's feature reasoning was wrong. |
+| D-043 | Four dependencies the onion service needed, and the rustls crypto-provider choice. |
+| D-044 | Cover traffic deferred as a stop-and-ask, not built. |
+| D-045 | Tor applies to every relay-facing command; the env-var contract lives in the core. |
+
+### Verified against the live Tor network
+
+The relay published a real v3 onion address —
+`vl2bppfcivlq7667zp2ayegkpc7i4425kbj7q4dis6go7atpq7w7fjad.onion` (deterministic
+for a given state directory, so it is reproducible). Descriptor publication took
+roughly 100 seconds before a client could find it. A separate client then
+bootstrapped its own Tor connection (~7 s cold), dialled that address, and got
+**200 from `/health`** — the whole path: circuit, `TorConnector`, `TorStream`,
+hyper, the relay's real axum router, and back. An earlier attempt at `/`
+returned 404, which was itself evidence the genuine router was answering rather
+than a stub.
+
+`core/src/transport/tor.rs`'s ignored test
+`a_real_tor_bootstrap_succeeds_against_the_live_network` performs exactly this
+check when `POUCH_TEST_ONION=host:port` names a Pouch relay, and asserts
+bootstrap alone when it does not. Run it with `cargo test -- --ignored`.
+
+Note for anyone repeating this: the onion service accepts streams on **any**
+port, because `handle_rend_requests` is not port-filtered. The client used
+`:80`.
+
+### Two findings that would have shipped
+
+Both compiled clean, passed clippy, and passed the entire test suite. Only
+running a real circuit exposed them, and both are the D-024 pattern again — a
+dependency accepting a configuration and quietly not providing the capability.
+
+1. **`arti-client` was missing `onion-service-client`** (D-042). Without it
+   arti refuses `.onion` addresses *at runtime*. Every Tor send would have
+   failed in the field.
+2. **A dead `rustls = "=0.23.20"` pin** (D-043). No workspace member named it,
+   so the lock had already resolved 0.23.43 through arti. Once the relay named
+   rustls directly, keeping the old pin would have put two rustls versions in
+   the graph — and installed a crypto provider into the registry of the version
+   arti is *not* using. A silent no-op.
+
+### What was NOT verified
+
+- **The Tauri window has never been launched.** This environment cannot run a
+  GUI. Everything claimed about the Transport settings screen rests on
+  `tsc --noEmit`, `vite build`, and `renderToStaticMarkup` assertions. Nobody
+  has seen it render.
+- **The desktop client has never talked to a relay over Tor.** The backend
+  commands compile and the core path beneath them is the same one the CLI and
+  the live-network test exercise, but that specific end-to-end path was not run.
+- **The CLI-over-Tor demo in the plan's Task 10 Step 4 was not executed.** The
+  Tor path it exercises was proven at the transport layer (above); the
+  full two-client demo through onion addressing was not run end to end.
+
+### Open
+
+- **Cover traffic (D-044).** Named in Phase 4's scope, deliberately not built.
+  Needs a design decision from the project owner — frequency, size, trigger,
+  and how a receiver distinguishes it from real traffic without that
+  distinction leaking — before anyone implements it.
+- **One unreproducible flake.**
+  `two_clients_exchange_text_and_the_relay_learns_nothing` (end-to-end) failed
+  once during Task 8, then passed in isolation and in every full run since. The
+  assertion text was not captured before it stopped reproducing. The test
+  spawns a relay on an ephemeral port, so a transient bind/timing issue is
+  plausible — but that is a hypothesis, not a diagnosis. **If CI hits it,
+  capture the failure output before doing anything else.**
 
 ---
 

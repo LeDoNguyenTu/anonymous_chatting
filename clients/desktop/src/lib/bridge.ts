@@ -19,6 +19,20 @@ export type IdentityLabel = "VERIFIED" | "UNVERIFIED" | "KEY CHANGED";
 /** The Custody Strip's transport field. Mirrors `Route` in the core. */
 export type TransportLabel = "DIRECT" | "TOR" | "OFFLINE";
 
+/**
+ * One transport the user can choose, on the Transport settings screen.
+ *
+ * `route` is the same token `transportState()` returns, so the screen can tell
+ * which option is active by comparing the two rather than tracking a second,
+ * drift-prone idea of the current transport. `name` and `explanation` are the
+ * core's own words — nothing here is written twice.
+ */
+export interface TransportOption {
+  route: TransportLabel;
+  name: string;
+  explanation: string;
+}
+
 export interface ConversationView {
   id: string;
   contactId: string;
@@ -122,6 +136,13 @@ export interface PouchBridge {
   safetyNumber(contactId: string): Promise<string>;
   verifyContact(contactId: string, verified: boolean): Promise<void>;
   transportState(): Promise<TransportLabel>;
+
+  /* Transport settings (SPEC §6.7.9). `connectTor` is slow — a real Tor
+   * bootstrap — and rejects rather than falling back to the direct route, so
+   * a screen must not treat a rejection as "still fine". */
+  transportOptions(): Promise<TransportOption[]>;
+  connectTor(): Promise<void>;
+  useDirectRelay(): Promise<void>;
   securityDetails(): Promise<SecurityDetailsView>;
   relayVisibility(blobSize: number): Promise<RelayVisibilityView>;
   wipeAll(): Promise<void>;
@@ -191,6 +212,12 @@ interface WireRelayVisibility {
   visible: string[];
   not_visible: string[];
   still_inferable: string[];
+}
+
+interface WireTransportOption {
+  route: string;
+  name: string;
+  explanation: string;
 }
 
 interface WireIdentityChange {
@@ -319,6 +346,19 @@ export function tauriBridge(
 
     transportState: async () =>
       asTransportLabel(await invoke<string>("transport_state")),
+
+    transportOptions: async () => {
+      const rows = await invoke<WireTransportOption[]>("transport_options");
+      return rows.map((r) => ({
+        route: asTransportLabel(r.route),
+        name: r.name,
+        explanation: r.explanation,
+      }));
+    },
+
+    connectTor: () => invoke<void>("connect_tor"),
+
+    useDirectRelay: () => invoke<void>("use_direct_relay"),
 
     securityDetails: async () => {
       const d = await invoke<WireSecurityDetails>("security_details");

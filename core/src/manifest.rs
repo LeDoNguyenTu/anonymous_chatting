@@ -133,10 +133,12 @@ impl Manifest {
     ///
     /// Only stage 1 is marked as having run, because at this point only stage 1
     /// has. Stage 2 is marked not applicable — there is no attachment metadata
-    /// on a text message. Stage 3 (compression) landed in Phase 3 and starts
-    /// `Pending` like every other stage still to run. Padding and sealed
-    /// sender remain not yet implemented; see `docs/DECISIONS.md` D-006's note
-    /// on why neither has an authorizing decision yet.
+    /// on a text message. Stage 3 (compression) landed in Phase 3 and stage 4
+    /// (padding) in Phase 4; both start `Pending` like every other stage still
+    /// to run. Sealed sender stays not yet implemented here because
+    /// construction cannot know the route the message will take —
+    /// [`Manifest::sealed`], called from the send path, is what turns it into
+    /// an honest outcome.
     pub fn new(plaintext_len: usize) -> Self {
         Self {
             stages: vec![
@@ -149,7 +151,7 @@ impl Manifest {
                     StageOutcome::NotApplicable("text message".to_string()),
                 ),
                 (Stage::Compress, StageOutcome::Pending),
-                (Stage::Pad, StageOutcome::NotYetImplemented),
+                (Stage::Pad, StageOutcome::Pending),
                 (Stage::Encrypt, StageOutcome::Pending),
                 (Stage::Seal, StageOutcome::NotYetImplemented),
                 (Stage::Route, StageOutcome::Pending),
@@ -227,6 +229,29 @@ impl Manifest {
             Stage::Pad,
             StageOutcome::Ran(format!("{before} → {after} bytes")),
         );
+    }
+
+    /// Records whether the sender was actually sealed from the relay.
+    ///
+    /// Only a Tor-routed message gets this — the relay's wire protocol already
+    /// carries no sender field (D-026), but a direct connection still exposes
+    /// the TCP/TLS source IP, so sealing depends entirely on which route
+    /// [`Manifest::routed`] is about to record. This must be called with the
+    /// same [`Route`] passed to `routed` for the same message; recording a
+    /// different one would produce a manifest that names one route at stage 7
+    /// and claims sealing for another.
+    pub fn sealed(&mut self, route: Route) {
+        let outcome = match route {
+            Route::Tor => {
+                StageOutcome::Ran("Tor onion circuit · relay learns no source IP".to_string())
+            }
+            Route::Direct => StageOutcome::NotApplicable(
+                "direct transport exposes the source IP; select Tor in transport settings to seal it"
+                    .to_string(),
+            ),
+            Route::Offline => StageOutcome::NotApplicable("not yet sent".to_string()),
+        };
+        self.set(Stage::Seal, outcome);
     }
 
     fn set(&mut self, stage: Stage, outcome: StageOutcome) {
@@ -366,27 +391,49 @@ pub struct RelayVisibility {
 impl RelayVisibility {
     /// Builds the honest description for a message of this size.
     ///
-    /// Phase-accurate: until sealed sender lands in Phase 3, the relay *can*
-    /// see which inbox submitted a blob, so that fact appears under `visible`
-    /// rather than under `not_visible`.
-    pub fn for_message(inbox_id: &str, blob_size: usize) -> Self {
+    /// Route-dependent, because the truth is: a direct connection exposes the
+    /// source IP to the relay and a Tor circuit does not. Passing the route in
+    /// rather than assuming one is what keeps this from becoming a screen that
+    /// describes a transport the message did not use.
+    pub fn for_message(inbox_id: &str, blob_size: usize, route: Route) -> Self {
+        let mut visible = vec![
+            "the inbox this was filed under (random, not you)",
+            "the size of this blob",
+            "the hour it arrived, within a 30-day TTL window",
+        ];
+        let mut not_visible = vec![
+            "message content",
+            "your name or your contact's name",
+            "the exact second you sent it",
+            "whether this is a first message or a reply",
+        ];
+        let mut still_inferable = vec!["that you connected", "roughly when", "how often"];
+
+        match route {
+            Route::Tor => {
+                visible.push(
+                    "which inbox submitted it — the wire protocol has no sender field, and Tor hides the source IP too",
+                );
+                not_visible.push("the IP address you connected from — hidden by the Tor circuit");
+                still_inferable.push("that you are using Tor");
+                still_inferable.push(
+                    "your Tor guard node can see connection timing, though not the relay you are talking to",
+                );
+            }
+            Route::Direct | Route::Offline => {
+                visible.push("the IP address you connected from");
+                visible.push(
+                    "which inbox submitted it — sealed sender requires Tor, see transport settings",
+                );
+            }
+        }
+
         Self {
             inbox_id: inbox_id.to_string(),
             blob_size,
-            visible: vec![
-                "the inbox this was filed under (random, not you)",
-                "the size of this blob",
-                "the hour it arrived, within a 30-day TTL window",
-                "the IP address you connected from",
-                "which inbox submitted it — sealed sender is not built yet",
-            ],
-            not_visible: vec![
-                "message content",
-                "your name or your contact's name",
-                "the exact second you sent it",
-                "whether this is a first message or a reply",
-            ],
-            still_inferable: vec!["that you connected", "roughly when", "how often"],
+            visible,
+            not_visible,
+            still_inferable,
         }
     }
 }
@@ -409,27 +456,75 @@ mod tests {
     }
 
     #[test]
-    fn unbuilt_stages_report_as_unimplemented_never_as_complete() {
-        // Padding and sealed sender remain unbuilt as of Phase 3 — see
-        // DECISIONS.md D-006's note on why neither has an authorizing
-        // decision yet. They must say so rather than silently disappearing or
-        // claiming success. Compression is no longer in this list: it landed
-        // this phase and is covered separately below.
+    fn seal_remains_unbuilt_in_a_freshly_constructed_manifest() {
+        // `Manifest::new` alone cannot know the route a message will take —
+        // `sealed()` (called from the send path once Task 6 lands) is what turns
+        // this into an honest Ran/NotApplicable. Until that call happens, the
+        // default must not claim anything.
         let m = Manifest::new(100);
-        for stage in [Stage::Pad, Stage::Seal] {
-            let (_, outcome) = m
-                .stages()
-                .iter()
-                .find(|(s, _)| *s == stage)
-                .expect("stage present");
-            assert_eq!(
-                *outcome,
-                StageOutcome::NotYetImplemented,
-                "{} must report as not yet implemented",
-                stage.label()
-            );
-            assert!(!outcome.ran());
-        }
+        let (_, outcome) = m
+            .stages()
+            .iter()
+            .find(|(s, _)| *s == Stage::Seal)
+            .expect("seal present");
+        assert_eq!(*outcome, StageOutcome::NotYetImplemented);
+    }
+
+    #[test]
+    fn a_new_text_manifest_starts_padding_as_pending_not_unimplemented() {
+        // Phase 4 implements message-level padding; a manifest built today must
+        // not still claim the feature does not exist.
+        let m = Manifest::new(10);
+        let (_, outcome) = m
+            .stages()
+            .iter()
+            .find(|(s, _)| *s == Stage::Pad)
+            .expect("pad present");
+        assert_eq!(*outcome, StageOutcome::Pending);
+    }
+
+    #[test]
+    fn sealing_over_tor_reports_ran() {
+        let mut m = Manifest::new(10);
+        m.sealed(Route::Tor);
+        let (_, outcome) = m
+            .stages()
+            .iter()
+            .find(|(s, _)| *s == Stage::Seal)
+            .expect("seal present");
+        assert!(
+            outcome.ran(),
+            "a Tor-routed message must report sealed sender as ran"
+        );
+    }
+
+    #[test]
+    fn sealing_over_direct_never_claims_ran() {
+        // SPEC §8.6's rule, applied to stage 6 the same way
+        // `a_direct_message_never_reports_tor` already applies it to stage 7: a
+        // manifest that claims a protection a message did not get is worse than
+        // one that admits it did not run.
+        let mut m = Manifest::new(10);
+        m.sealed(Route::Direct);
+        let (_, outcome) = m
+            .stages()
+            .iter()
+            .find(|(s, _)| *s == Stage::Seal)
+            .expect("seal present");
+        assert!(!outcome.ran(), "a direct message claimed sealed sender");
+        assert!(matches!(outcome, StageOutcome::NotApplicable(_)));
+    }
+
+    #[test]
+    fn sealing_while_offline_never_claims_ran() {
+        let mut m = Manifest::new(10);
+        m.sealed(Route::Offline);
+        let (_, outcome) = m
+            .stages()
+            .iter()
+            .find(|(s, _)| *s == Stage::Seal)
+            .expect("seal present");
+        assert!(!outcome.ran());
     }
 
     #[test]
@@ -565,20 +660,41 @@ mod tests {
     fn relay_visibility_admits_what_leaks() {
         // The third block is required. A screen that lists only what is
         // protected is the half-truth Prime Directive 3 forbids.
-        let v = RelayVisibility::for_message("7f3ac219", 1024);
+        let v = RelayVisibility::for_message("7f3ac219", 1024, Route::Direct);
         assert!(!v.still_inferable.is_empty(), "the leak block is missing");
 
         // Phase-accurate: sealed sender is not built, so the relay *can* see
         // which inbox submitted a blob and the screen must say so.
         assert!(
-            v.visible
-                .iter()
-                .any(|s| s.contains("sealed sender is not built")),
+            v.visible.iter().any(|s| s.contains("sealed sender")),
             "the screen claims sender privacy the build does not provide"
         );
         assert!(
             v.visible.iter().any(|s| s.contains("IP address")),
             "the screen omits the IP exposure that direct transport has"
         );
+    }
+
+    #[test]
+    fn relay_visibility_over_tor_does_not_claim_ip_exposure() {
+        let v = RelayVisibility::for_message("7f3ac219", 1024, Route::Tor);
+        assert!(
+            !v.visible.iter().any(|s| s.contains("IP address")),
+            "a Tor-routed message must not list IP exposure as visible to the relay"
+        );
+        assert!(
+            v.not_visible.iter().any(|s| s.contains("IP address")),
+            "a Tor-routed message should state the IP is NOT visible, not simply omit the line"
+        );
+        // What Tor does not hide must still be admitted somewhere — the guard
+        // node and connection timing remain observable, and Prime Directive 3
+        // forbids a screen that lists only what is protected.
+        assert!(!v.still_inferable.is_empty());
+    }
+
+    #[test]
+    fn relay_visibility_over_direct_still_admits_ip_exposure() {
+        let v = RelayVisibility::for_message("7f3ac219", 1024, Route::Direct);
+        assert!(v.visible.iter().any(|s| s.contains("IP address")));
     }
 }

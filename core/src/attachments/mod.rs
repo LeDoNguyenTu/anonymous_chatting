@@ -12,7 +12,8 @@
 //! has the full reasoning.
 
 pub mod metadata;
-pub mod padding;
+
+use crate::padding;
 
 pub use metadata::{ImageFormat, StripReport};
 

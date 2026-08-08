@@ -21,6 +21,18 @@ anyhow.workspace = true
 hex.workspace = true
 base64.workspace = true
 
+# The onion service (Phase 4, D-039). `hyper-util`'s server side is what
+# bridges each accepted Tor stream into the same axum Router the direct
+# listener uses — axum 0.7's `serve` only accepts a concrete TcpListener.
+arti-client.workspace = true
+tor-hsservice.workspace = true
+tor-rtcompat.workspace = true
+tor-cell.workspace = true
+safelog.workspace = true
+rustls.workspace = true
+futures-util.workspace = true
+hyper-util.workspace = true
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
 reqwest = { workspace = true, features = ["json"] }

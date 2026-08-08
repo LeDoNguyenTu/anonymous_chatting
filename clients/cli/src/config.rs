@@ -6,7 +6,8 @@
 //! thing to replace.
 
 use anyhow::{bail, Context, Result};
-use pouch_core::transport::RelayConfig;
+use pouch_core::transport::{RelayConfig, TorRelayConfig};
+use pouch_core::Pouch;
 
 /// Path to the local encrypted database.
 pub fn db_path() -> String {
@@ -20,6 +21,45 @@ pub fn relay() -> RelayConfig {
         Ok(pin) if !pin.is_empty() => RelayConfig::pinned(url, pin),
         _ => RelayConfig::insecure_local(url),
     }
+}
+
+/// Where this client keeps Tor's state when `POUCH_TOR_STATE_DIR` is unset.
+///
+/// The working directory, matching how `POUCH_DB` defaults — a headless
+/// client run from a directory should keep what it accumulates there, where
+/// the operator can see and delete it.
+const DEFAULT_TOR_STATE_DIR: &str = "pouch-tor-state";
+
+/// Opens the database for a command that is going to reach the relay, routing
+/// through Tor if one is configured.
+///
+/// One place, not four. Every command that talks to the relay — `add`,
+/// `send`, `send-file`, `receive` — opens through here, so a configured Tor
+/// target cannot apply to some of them and quietly not to others. Wiring only
+/// the obvious two would mean a user who set `POUCH_RELAY_TOR_ONION` still
+/// handed their IP address to the relay while adding a contact, holding a
+/// protection they believed in and did not have. A fifth network command
+/// added later gets Tor by construction rather than by remembering.
+///
+/// Which environment variables name a Tor target is
+/// [`TorRelayConfig::from_env`]'s to define, not this client's — see there
+/// for why that lives in the core.
+///
+/// Slow when Tor is configured: bootstrapping a circuit is real network I/O,
+/// seconds to tens of seconds against a cold state directory. Commands that
+/// only read local state call [`Pouch::open`] directly and stay instant.
+///
+/// A Tor connection that fails is an error, never a quiet fall back to the
+/// direct route — `Pouch::connect_tor` leaves the existing connection alone
+/// on failure, and the `?` here means the command stops rather than sending
+/// over a route the user did not choose.
+pub async fn open_for_relay() -> Result<Pouch> {
+    let mut key = db_key()?;
+    let mut pouch = Pouch::open(&db_path(), &mut key, relay())?;
+    if let Some(tor) = TorRelayConfig::from_env(DEFAULT_TOR_STATE_DIR) {
+        pouch.connect_tor(tor).await?;
+    }
+    Ok(pouch)
 }
 
 /// Reads the database key.

@@ -3,9 +3,9 @@
 //! Held behind an async mutex because commands are async and a std mutex guard
 //! cannot be held across an await point.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use pouch_core::transport::RelayConfig;
+use pouch_core::transport::{RelayConfig, TorRelayConfig};
 use pouch_core::Pouch;
 use tokio::sync::Mutex;
 
@@ -64,4 +64,32 @@ pub fn database_path(app_data_dir: PathBuf) -> PathBuf {
 /// because it is loopback (D-017). Phase 4 replaces this with an onion address.
 pub fn relay_config() -> RelayConfig {
     RelayConfig::insecure_local("http://127.0.0.1:8443")
+}
+
+/// Where this device's Tor state persists across runs.
+///
+/// A sibling of the database, not a directory inside it. What Tor keeps here
+/// — guard relays, a consensus cache, circuit state — is not message content,
+/// so it does not belong under `SQLCipher`; and keeping it separate means
+/// wiping the database does not also throw away a working bootstrap and force
+/// a slow cold start.
+pub fn tor_state_dir(app_data_dir: &Path) -> PathBuf {
+    app_data_dir.join("tor-state")
+}
+
+/// The Tor target this build talks to, if one is configured.
+///
+/// Deployment configuration, not a user preference — the same reasoning
+/// [`relay_config`] already applies to the direct address. The Transport
+/// screen lets someone choose *whether* to use Tor, not *which* onion service
+/// to trust: a UI that can be pointed at an arbitrary address is a UI that can
+/// be talked into pointing at someone else's relay. If entering an address
+/// ever becomes a feature it should be designed deliberately rather than
+/// arriving as a side effect of this one.
+///
+/// Which variables name that target is the core's to define, so this cannot
+/// drift from the CLI. Only the fallback state directory is this client's
+/// business, because only this client knows where its app data lives.
+pub fn tor_config(app_data_dir: &Path) -> Option<TorRelayConfig> {
+    TorRelayConfig::from_env(&tor_state_dir(app_data_dir).to_string_lossy())
 }

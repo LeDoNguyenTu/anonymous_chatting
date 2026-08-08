@@ -322,6 +322,80 @@ pub async fn transport_state(state: State<'_, AppState>) -> Result<String, Strin
     Ok(pouch.transport_state().await.label().to_string())
 }
 
+/* -- transport settings (SPEC §6.7.9) -------------------------------------- */
+
+/// One transport the user can choose.
+///
+/// `route` is the token the Custody Strip and `transport_state` already use,
+/// so the screen can tell which option is active by comparing strings rather
+/// than by keeping a parallel notion of the same thing. `name` is the same
+/// route written as a title, and `explanation` is the core's own copy.
+#[derive(Serialize)]
+pub struct TransportOptionView {
+    pub route: String,
+    pub name: String,
+    pub explanation: String,
+}
+
+/// The transports the settings screen offers.
+///
+/// `Offline` is not among them. It is a state the client reports when it
+/// cannot reach the relay, not something anyone selects — offering it would
+/// suggest disconnection is a privacy setting.
+///
+/// Every string here comes from `Route`, so the screen cannot drift from what
+/// the manifest and the Custody Strip tell the same user about the same route.
+/// Neither option is marked the secure one: the trade is stated and the choice
+/// is the user's.
+#[tauri::command]
+pub fn transport_options() -> Vec<TransportOptionView> {
+    use pouch_core::transport::Route;
+
+    [Route::Direct, Route::Tor]
+        .iter()
+        .map(|r| TransportOptionView {
+            route: r.label().to_string(),
+            name: r.name().to_string(),
+            explanation: r.explanation().to_string(),
+        })
+        .collect()
+}
+
+/// Switches this device to a Tor-routed relay connection.
+///
+/// Slow: a real Tor bootstrap, seconds to tens of seconds on a cold state
+/// directory. The screen shows a waiting note for exactly this reason.
+///
+/// On failure the existing connection is left as it was — `Pouch::connect_tor`
+/// never falls back to the direct route, so a user who asks for Tor and does
+/// not get it is told, rather than quietly continuing over the route they were
+/// trying to leave.
+#[tauri::command]
+pub async fn connect_tor(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    let dir = app_data_dir(&app)?;
+    let config = crate::state::tor_config(&dir).ok_or_else(|| {
+        "No Tor relay address is configured for this build, so Tor cannot be used yet."
+            .to_string()
+    })?;
+
+    let mut guard = state.lock().await;
+    let pouch = guard
+        .as_mut()
+        .ok_or_else(|| "No identity is open on this device yet.".to_string())?;
+    pouch.connect_tor(config).await.map_err(|e| e.to_string())
+}
+
+/// Switches back to the direct relay connection.
+///
+/// Fast — there is no circuit to build — and it always succeeds, which is why
+/// a user who cannot reach Tor is never stranded.
+#[tauri::command]
+pub async fn use_direct_relay(state: State<'_, AppState>) -> Result<(), String> {
+    state
+        .with(|p| p.use_direct_relay(relay_config()).map_err(|e| e.to_string()))
+        .await
+}
+
 /// Every mechanism in use.
 #[tauri::command]
 pub async fn security_details(state: State<'_, AppState>) -> Result<SecurityDetailsView, String> {
@@ -338,7 +412,7 @@ pub async fn relay_visibility(
 
     state
         .with(|p| {
-            let v = RelayVisibility::for_message(p.inbox_id(), blob_size);
+            let v = RelayVisibility::for_message(p.inbox_id(), blob_size, p.current_route());
             Ok(RelayVisibilityView {
                 inbox_id: v.inbox_id,
                 blob_size: v.blob_size,
@@ -716,12 +790,22 @@ pub fn identity_labels() -> Vec<String> {
     .collect()
 }
 
-fn db_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+/// The OS application-data directory for this build, created if absent.
+///
+/// One lookup, one error message. Every command that needs somewhere on disk
+/// goes through here so a user who hits this failure is told the same thing
+/// whichever command they were running.
+fn app_data_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
     let dir = app
         .path()
         .app_data_dir()
         .map_err(|_| "Could not find a place to store data on this device.".to_string())?;
-    Ok(database_path(dir))
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir)
+}
+
+fn db_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    Ok(database_path(app_data_dir(app)?))
 }
 
 /// The database key for this device.
@@ -737,10 +821,6 @@ fn db_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
 fn device_key(app: &tauri::AppHandle) -> Result<Vec<u8>, String> {
     use pouch_core::keying::development_device_key;
 
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|_| "Could not find a place to store data on this device.".to_string())?;
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let dir = app_data_dir(app)?;
     development_device_key(&dir.join("device.key")).map_err(|e| e.to_string())
 }
