@@ -218,3 +218,68 @@ jobs:
             fi
           done
           exit "$missing"
+
+  android-app:
+    name: Android app — lint, unit tests, assemble
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: clients/android
+    steps:
+      - uses: actions/checkout@v4
+
+      # AGP 8.7 supports JDK 17 through 21. The default JDK on this runner
+      # moves over time, so it is pinned rather than inherited — a runner image
+      # bump to JDK 24 would otherwise fail this job for a reason unrelated to
+      # any change in the code.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      # No Gradle wrapper is committed — the wrapper is a binary jar, and this
+      # action supplies Gradle itself.
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.11.1"
+
+      # Unit tests first. These are the only part of the Android client that
+      # actually runs anywhere: plain JVM tests over the Custody Strip's state
+      # mapping, which is where that component can tell the user something
+      # untrue. Everything else here is a compile check.
+      - name: Unit tests
+        run: gradle :app:testDebugUnitTest --no-daemon
+
+      - name: Lint
+        run: gradle :app:lintDebug --no-daemon
+
+      # assembleDebug rather than assembleRelease: a release build requires the
+      # four cross-compiled .so files, and this job deliberately does not build
+      # them — the android-bridge job above does, and duplicating a fifteen-
+      # minute Rust cross-compile here would buy nothing. A debug APK without
+      # jniLibs will throw UnsatisfiedLinkError if it is ever run, which is
+      # correct: it is a compile artifact, not something to install.
+      - name: Assemble a debug APK
+        run: gradle :app:assembleDebug --no-daemon
+
+      - name: Confirm the manifest requests INTERNET and nothing else
+        # SPEC §2.2 is a promise about what this app can do, and a permission
+        # can arrive transitively from a library's own manifest during merge
+        # without anyone editing AndroidManifest.xml. Checking the *merged*
+        # manifest is the only way to know what actually ships.
+        run: |
+          set -eu
+          merged=app/build/intermediates/merged_manifests/debug/processDebugManifest/AndroidManifest.xml
+          if [ ! -f "$merged" ]; then
+            merged=$(find app/build/intermediates -name AndroidManifest.xml -path '*merged*' | head -1)
+          fi
+          echo "Checking $merged"
+          granted=$(grep -oE 'android:name="android\.permission\.[A-Z_]+"' "$merged" \
+                    | sed 's/.*permission\.//; s/"//' | sort -u)
+          echo "Permissions requested:"
+          echo "$granted" | sed 's/^/  /'
+          if [ "$granted" != "INTERNET" ]; then
+            echo "FAIL: SPEC 2.2 allows INTERNET only in Phase 5."
+            exit 1
+          fi
+          echo "ok: INTERNET only"

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      A bare Material parent. The real palette lives in Theme.kt as design
+      tokens; this exists only so the window has a theme before Compose takes
+      over.
+    -->
+    <style name="Theme.Pouch" parent="android:Theme.Material.NoActionBar" />
+</resources>
