@@ -25,6 +25,7 @@ interface PrivacyStorageProps {
   onBack: () => void;
   onWiped: () => void;
   onExportBackup: () => void;
+  onTransportSettings: () => void;
 }
 
 export function PrivacyStorage({
@@ -32,6 +33,7 @@ export function PrivacyStorage({
   onBack,
   onWiped,
   onExportBackup,
+  onTransportSettings,
 }: PrivacyStorageProps) {
   const [choices, setChoices] = useState<RetentionChoice[]>([]);
   const [policy, setPolicy] = useState<RetentionValue | null>(null);
@@ -232,6 +234,22 @@ export function PrivacyStorage({
                 queued === 1 ? "It" : "They"
               } will send when you reconnect.`}
         </p>
+      </section>
+
+      {/* -- transport -------------------------------------------------------- */}
+      <section className="panel">
+        <h2 className="panel__h">Transport</h2>
+        <p className="panel__note">
+          How this device reaches the relay: straight there, or through Tor.
+          Each has a different cost, stated on the next screen.
+        </p>
+        <button
+          type="button"
+          className="button-quiet"
+          onClick={onTransportSettings}
+        >
+          Transport settings
+        </button>
       </section>
 
       {/* -- backup ----------------------------------------------------------- */}

@@ -49,6 +49,27 @@
   font-size: var(--text-14);
 }
 
+/* A choice that carries its own consequence underneath it, rather than a bare
+   label. The radio sits with the first line instead of floating in the middle
+   of a paragraph, and the block gets room to breathe between options so two
+   explanations do not read as one. */
+.choice--block {
+  align-items: flex-start;
+  padding: var(--space-2) 0;
+}
+
+.choice--block input {
+  /* Nudged down to sit on the first line's baseline rather than its box top. */
+  margin-top: 2px;
+}
+
+/* `.panel__note` is written for a paragraph. Inside a label it has to be a
+   span — a block element there would be legal but awkward — so it is made to
+   behave like one, keeping the muted tone and size it carries elsewhere. */
+.choice--block .panel__note {
+  display: block;
+}
+
 /* Destructive actions look destructive. Paired with the typed confirmation, so
    colour is never the only thing standing between the user and a wipe. */
 .button-alarm {
