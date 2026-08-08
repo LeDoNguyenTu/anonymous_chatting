@@ -59,7 +59,18 @@ rusqlite = { version = "=0.39.0", features = ["bundled-sqlcipher"] }
 # --- transport / server ---------------------------------------------------
 axum = "=0.7.9"
 reqwest = { version = "=0.12.9", default-features = false, features = ["json", "rustls-tls-manual-roots"] }
-rustls = "=0.23.20"
+# Bumped 0.23.20 -> 0.23.43 in Phase 4, and given a provider feature. The old
+# pin was dead: no workspace member named it, so the lock resolved 0.23.43
+# transitively through arti anyway. Now that the relay names rustls directly,
+# leaving the pin at 0.23.20 would put TWO rustls versions in the graph — and
+# the relay would install a crypto provider into the registry of the version
+# arti is *not* using, which fails silently rather than loudly. See D-043.
+#
+# `ring` because it is already this project's provider (reqwest pulls it in).
+# arti's own `rustls` feature deliberately selects no provider, leaving the
+# choice to the application. This is the TLS arti uses to reach the Tor
+# network — not Pouch's message crypto, which is MLS and unaffected.
+rustls = { version = "=0.23.43", default-features = false, features = ["ring"] }
 tokio = "=1.53.1"
 tower-http = "=0.6.2"
 
@@ -76,6 +87,17 @@ tower-http = "=0.6.2"
 arti-client = { version = "=0.43.0", default-features = false, features = ["tokio", "rustls", "onion-service-client", "onion-service-service"] }
 tor-hsservice = "=0.43.0"
 tor-rtcompat = { version = "=0.43.0", features = ["tokio"] }
+# `StreamRequest::accept` takes a `tor_cell::relaycell::msg::Connected` and
+# tor-hsservice does not re-export it, so the relay needs this one directly.
+# Same 0.43.0 the rest of the arti family is pinned at — it is already in the
+# graph transitively; this only makes the direct use explicit and pinned.
+tor-cell = "=0.43.0"
+# arti deliberately does not implement `Display` for an onion address — it
+# redacts by default so a `.onion` cannot leak into a log by accident. The
+# relay has to print its own address for the operator to use, which means
+# calling `display_unredacted()` from this trait. Already in the graph
+# transitively; pinned here because the relay names it directly.
+safelog = "=0.8.2"
 
 # reqwest has no hook for a custom low-level connector, and arti-client has no
 # in-process SOCKS listener (only the separate `arti` CLI binary does, which

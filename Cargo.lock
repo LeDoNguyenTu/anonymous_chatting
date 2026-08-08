@@ -3134,17 +3134,25 @@ name = "pouch-relay"
 version = "0.1.2"
 dependencies = [
  "anyhow",
+ "arti-client",
  "axum",
  "base64",
+ "futures-util",
  "hex",
+ "hyper-util",
  "rand 0.8.5",
  "reqwest",
  "rusqlite",
+ "rustls",
+ "safelog",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.19",
  "tokio",
+ "tor-cell",
+ "tor-hsservice",
+ "tor-rtcompat",
  "tower-http",
 ]
 

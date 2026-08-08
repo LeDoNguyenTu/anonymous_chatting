@@ -12,6 +12,8 @@
 #![deny(missing_docs)]
 
 pub mod http;
+/// Serving the same routes over a Tor v3 onion service (Phase 4).
+pub mod onion;
 pub mod store;
 
 /// Access logging is off, deliberately and explicitly.

@@ -1419,4 +1419,66 @@ timeout is chosen against a number rather than a guess.
 a full HTTP exchange over a circuit. Bootstrap is proven; the connector is
 not, until there is an onion service of this project's own to dial.
 
+*(Resolved later the same session — see D-043's verification note. The full
+path is now proven end to end.)*
+
+---
+
+## D-043 — Four dependencies the relay's onion service needed, and one crypto-provider choice
+**Date:** 2026-08-09 · **Status:** accepted
+
+**Decision.** Running the relay as a Tor v3 onion service required four
+additions to the pinned dependency set. Three are mechanical; the fourth is a
+real choice worth stating plainly.
+
+**`tor-cell =0.43.0`** — `StreamRequest::accept` takes a
+`tor_cell::relaycell::msg::Connected` and `tor-hsservice` does not re-export
+it. Already in the graph transitively at the same version; this only makes a
+direct use explicit and pinned.
+
+**`safelog =0.8.2`** — arti deliberately does *not* implement `Display` for
+an onion address. It redacts by default, precisely so a `.onion` cannot reach
+a log by accident. The relay has to print its own address for the operator to
+connect a client to it, which means calling `display_unredacted()` from this
+trait. Worth noting rather than papering over: this project made the same
+judgement about the same class of data in the opposite direction — the relay
+prints its bind address too, and neither is information about a *request*.
+
+**`rustls` bumped `=0.23.20` → `=0.23.43`, with the `ring` feature.** The old
+pin was dead — no workspace member named it, so the lock had already resolved
+0.23.43 transitively through arti. That mattered the moment the relay named
+rustls directly: keeping `=0.23.20` would have put two rustls versions in the
+graph, and a crypto provider installed into one version's registry does
+nothing for the other. It would have failed silently, which is the failure
+mode this project treats as worse than a loud one (D-024).
+
+**The choice: `ring` as the rustls crypto provider.** arti's `rustls` feature
+deliberately selects *no* provider — it leaves that to the application. `core`
+only worked by accident, because `reqwest` happens to pull rustls in with
+`ring`; the relay had no such accident and panicked at first TLS use with
+"could not automatically determine the process-level CryptoProvider". `ring`
+is chosen because it is already this project's provider, so this adds no new
+trusted code — the alternative, `aws-lc-rs`, would be a new C toolchain
+dependency and a new audit surface for no stated benefit.
+
+`server/src/main.rs` calls `install_default()` explicitly rather than relying
+on exactly-one-feature unification continuing to hold. Feature unification is
+a property of the whole graph, and the graph changes; an explicit install
+fails at a named line rather than as a panic deep inside a handshake.
+
+**Scope, stated because it is easy to overstate.** This is the TLS arti uses
+to reach the Tor network. It is not Pouch's message encryption, which is MLS
+(X25519 / Ed25519 / AES-128-GCM) and is unaffected by any of the above. A
+different provider here would change how arti talks to Tor directory servers
+and relays; it would not change a single byte of message crypto.
+
+**Verified, not assumed.** The relay was run as a real onion service and
+published a real v3 address. A client then bootstrapped its own Tor
+connection, dialled that address, and got a 200 from the relay's `/health`
+route — the complete path: circuit, `TorConnector`, `TorStream`, hyper,
+axum router, and back. This also closes the gap D-042 recorded as still
+unproven. The ignored test `a_real_tor_bootstrap_succeeds_against_the_live_network`
+now performs exactly this check when `POUCH_TEST_ONION` names a Pouch relay,
+and asserts bootstrap alone when it does not.
+
 

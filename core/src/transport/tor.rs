@@ -387,9 +387,9 @@ mod tests {
     /// this test deliberately does not hard-code a third party's onion
     /// address — one was tried and turned out not to be a valid v3 address at
     /// all, which is exactly the brittleness worth avoiding. Set
-    /// `POUCH_TEST_ONION=<host>:<port>` to extend this test to a real
-    /// request; the project's own relay-as-onion-service covers the same
-    /// ground end to end once that exists.
+    /// `POUCH_TEST_ONION=<host>:<port>` to a **Pouch relay** running as an
+    /// onion service (`POUCH_RELAY_TOR_STATE=... pouch-relay` prints its
+    /// address on startup) to extend this into a full end-to-end check.
     #[tokio::test]
     #[ignore]
     async fn a_real_tor_bootstrap_succeeds_against_the_live_network() {
@@ -420,21 +420,14 @@ mod tests {
             return;
         }
 
-        let uri = backend.url("/").parse::<http::Uri>().expect("uri");
-        let request = http::Request::builder()
-            .method(http::Method::GET)
-            .uri(uri)
-            .body(Full::new(Bytes::new()))
-            .expect("request");
-
-        let response = backend
-            .hyper_client
-            .request(request)
-            .await
-            .expect("the circuit carried an HTTP exchange");
-        println!(
-            "onion service answered over Tor with status {}",
-            response.status()
+        // `reachable` polls `/health`, which a Pouch relay answers and nothing
+        // else does. Passing this means the whole path worked: a circuit was
+        // built to the onion service, the TorConnector/TorStream plumbing
+        // carried an HTTP request over it, the relay's own axum router
+        // answered, and the response came back through the same path.
+        assert!(
+            backend.reachable().await,
+            "the onion service did not answer /health over Tor — is POUCH_TEST_ONION a Pouch relay?"
         );
     }
 }
