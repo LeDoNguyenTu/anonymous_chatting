@@ -67,10 +67,13 @@ tower-http = "=0.6.2"
 # D-039: arti-client/tor-hsservice/tor-rtcompat pinned at 0.43.0 — the newest
 # release, 0.44.0, needs Rust 1.91 and failed its own docs.rs build; 0.43.0
 # needs 1.89 (which rust-version above now declares) and built cleanly.
-# `onion-service-service` enables `TorClient::launch_onion_service` — the
-# server side needs it; the client only needs `TorClient::connect`, but
-# pinning one feature set for the whole workspace is simpler than two.
-arti-client = { version = "=0.43.0", default-features = false, features = ["tokio", "rustls", "onion-service-service"] }
+# `onion-service-service` enables `TorClient::launch_onion_service`, which the
+# relay needs to *be* an onion service. `onion-service-client` is what allows
+# `TorClient::connect` to accept a `.onion` address at all — without it arti
+# rejects one at runtime with "feature onion-service-client not compiled in",
+# not at compile time, so the client transport would build fine and fail in
+# the field. Found by actually running a circuit; see D-042.
+arti-client = { version = "=0.43.0", default-features = false, features = ["tokio", "rustls", "onion-service-client", "onion-service-service"] }
 tor-hsservice = "=0.43.0"
 tor-rtcompat = { version = "=0.43.0", features = ["tokio"] }
 

@@ -1360,3 +1360,63 @@ get right for no stated benefit. The shared module now lives at
 `core/src/padding.rs`, moved out of `core/src/attachments/` in the same
 session — a mechanical relocation with no logic change.
 
+---
+
+## D-042 — `arti-client` needs `onion-service-client`; D-039's feature reasoning was wrong
+**Date:** 2026-08-09 · **Status:** accepted · **Amends:** D-039 (feature set only; the `=0.43.0` pin is unchanged)
+
+**Decision.** `arti-client`'s feature list gains `onion-service-client`
+alongside the `onion-service-service` D-039 already selected. No version
+changed.
+
+**What D-039 got wrong, and how it surfaced.** D-039's own Cargo.toml
+comment reasoned: "`onion-service-service` enables
+`TorClient::launch_onion_service` — the server side needs it; the client
+only needs `TorClient::connect`." The second half is false.
+`TorClient::connect` compiles and runs fine without `onion-service-client`
+— it simply *refuses `.onion` addresses at runtime*, with
+`Rejecting .onion address; feature onion-service-client not compiled in`.
+Since connecting to the relay's onion address is the entire point of the
+client-side Tor transport, every Tor send and receive would have failed in
+the field on a build that compiled cleanly, passed clippy, and passed the
+whole test suite.
+
+**Why nothing caught it earlier.** Nothing could have. The non-network unit
+test asserts a malformed hostname is rejected before bootstrapping, which is
+still true. The compile check passes because the feature gate is a runtime
+refusal, not a missing symbol. It took running a real circuit against the
+live Tor network — the `#[ignore]`d test in `core/src/transport/tor.rs`,
+run explicitly — to see it.
+
+**This is D-024's lesson, restated.** "A security control that fails
+silently is worse than one that is absent"; "anywhere the project depends on
+a library actually doing something, check that it did." D-024 was about
+`PRAGMA key` being silently ignored by a plain-SQLite build. This is the
+same shape: a dependency accepting a configuration and quietly not providing
+the capability. Both were invisible to unit tests and visible immediately on
+a real run.
+
+**Two things the same real run also corrected**, recorded here rather than
+left in the plan's history:
+- The plan's smoke test dialled
+  `sdscoq7snet5uu3d4mos4ecemqzfgm5oiqu35bwgqrp6irhaad4tkjqd.onion`, described
+  as "the Tor Project's own onion mirror." arti rejects it as
+  `Invalid onion address` — it is 56 characters, so it looks right, but it
+  fails v3 checksum validation. No third-party onion address is hard-coded
+  now: the ignored test asserts the bootstrap itself, and takes an optional
+  `POUCH_TEST_ONION=host:port` to dial a real one. The end-to-end check
+  belongs against this project's own relay-as-onion-service anyway.
+- The same test originally asserted `TorBackend::reachable()`, which polls
+  `/health` — a Pouch relay endpoint. A third-party onion service has no
+  reason to answer it, so the assertion was testing the wrong service's
+  routing table.
+
+**Measured.** A real bootstrap against the live Tor network from this
+Windows workstation takes roughly 7 seconds, cold. Recorded so a later
+timeout is chosen against a number rather than a guess.
+
+**What is still unproven.** That the `TorConnector`/`TorStream` path carries
+a full HTTP exchange over a circuit. Bootstrap is proven; the connector is
+not, until there is an onion service of this project's own to dial.
+
+
