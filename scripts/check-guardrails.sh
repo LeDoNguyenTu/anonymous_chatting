@@ -148,6 +148,51 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+note "5. Clients must not reach below the core's public API (D-012)"
+
+# `Pouch` is the only surface a client touches. Reaching into `crypto::` or
+# `storage::` from a client means a key, a cipher, or a storage handle has
+# arrived somewhere the UI layer can see it — and the fix is a new operation on
+# `Pouch`, never a deeper import.
+#
+# `keying::` is deliberately not on this list: every client has to obtain a
+# database key before it can open anything, and `keying` is the one module whose
+# job that is. What it must not do is reach past it.
+if hits=$(scan -nInE 'pouch_core::(crypto|storage)::' -- clients/ "${EXCLUDES[@]}"); then
+  bad "a client reaches beneath the core's public API:"
+  printf '%s\n' "$hits" | sed 's/^/        /'
+else
+  good "no client reaches beneath Pouch"
+fi
+
+# ---------------------------------------------------------------------------
+note "6. Every JNI entry point must contain its panics"
+
+JNI_LIB=clients/android/jni/src/lib.rs
+if [ -f "$JNI_LIB" ]; then
+  # A Rust panic unwinding across the FFI boundary is undefined behaviour, so
+  # every exported function has to catch. This is structural rather than a
+  # grep for wrongdoing: adding a third entry point and forgetting the wrapper
+  # is the easy mistake, and it produces a crash that only reproduces on a
+  # device, under a condition nobody planned for.
+  #
+  # Counted on the attribute at the start of a line so the prose in this file
+  # and in the crate's own comments does not inflate either number.
+  exports=$(grep -c '^#\[no_mangle\]' "$JNI_LIB" || true)
+  caught=$(grep -c 'catch_unwind' "$JNI_LIB" || true)
+
+  if [ "$exports" -eq 0 ]; then
+    bad "no JNI entry points found in $JNI_LIB — has the export convention changed?"
+  elif [ "$caught" -lt "$exports" ]; then
+    bad "$exports JNI entry points but only $caught catch_unwind — a panic can cross the boundary"
+  else
+    good "all $exports JNI entry points contain their panics"
+  fi
+else
+  good "Android bridge not yet implemented — skipped"
+fi
+
+# ---------------------------------------------------------------------------
 if [ "$fail" -eq 0 ]; then
   printf '\n\033[1mAll guardrail checks passed.\033[0m\n'
 else
