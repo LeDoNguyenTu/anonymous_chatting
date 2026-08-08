@@ -20,6 +20,7 @@ authors = ["Le Do Nguyen Tu"]
 # this crate unconditionally, for the same nested-git-worktree reason spelled
 # out in clients/desktop/src-tauri/Cargo.toml.
 [workspace]
+resolver = "2"
 
 [lib]
 # `cdylib` is what System.loadLibrary() dlopen()s on the device.
@@ -40,8 +41,8 @@ tokio = { version = "=1.53.1", features = ["rt-multi-thread", "sync"] }
 thiserror = "=2.0.19"
 
 # The JNI boundary itself. 0.21 is the release whose entry-point signatures take
-# `JNIEnv` by value rather than by raw pointer, which is what lets this crate
-# forbid unsafe code below and still be callable from the JVM.
+# `JNIEnv` by value rather than by raw pointer, which is why nothing in this
+# crate needs an `unsafe` block to be callable from the JVM.
 jni = "=0.21.1"
 
 # Routes Rust's `log` output to logcat. Nothing in this crate logs message
@@ -71,3 +72,29 @@ tempfile = "=3.14.0"
 # boundary is being crossed the wrong way, not a lint to relax.
 unsafe_code = "deny"
 missing_docs = "warn"
+
+# Cross-compiling SQLCipher for Android.
+#
+# `rusqlite`'s `bundled-sqlcipher` feature — which the workspace selects, and
+# which reaches this crate through pouch-core — compiles SQLCipher from source
+# but links the *host's* OpenSSL for its crypto. There is no host OpenSSL for
+# an Android target, so that configuration fails at link time on exactly the
+# builds this crate exists to produce.
+#
+# `bundled-sqlcipher-vendored-openssl` builds OpenSSL from source too, for
+# whichever target is being compiled.
+#
+# Scoped to Android rather than named as an ordinary dependency, because Cargo
+# features are additive: unconditionally it would also apply when this crate is
+# built and tested on a developer's machine, where compiling OpenSSL from
+# source is unnecessary and adds build-time prerequisites (perl, nasm) that
+# nothing else in this project needs. `resolver = "2"` above is what makes the
+# scoping real — under the v1 resolver, target-specific features leak into
+# every target.
+#
+# Not a cryptographic change: the same SQLCipher, the same AES-256, sourced
+# differently. A build-configuration decision, recorded as D-047.
+[target.'cfg(target_os = "android")'.dependencies]
+rusqlite = { version = "=0.39.0", features = [
+    "bundled-sqlcipher-vendored-openssl",
+] }

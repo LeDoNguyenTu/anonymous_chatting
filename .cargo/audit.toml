@@ -58,10 +58,37 @@ ignore = [
     # AVX2 SHAKE-256 out-of-bounds panic, same reasoning.
     "RUSTSEC-2026-0208",
 
-    # Constant-time swap/select may be incorrect on aarch64. Not reachable
-    # today — nothing in the compiled graph calls it — but it is the entry to
-    # re-check first when the Android client lands in Phase 5, since that is
-    # aarch64.
+    # Constant-time swap/select is incorrect on aarch64: the inline assembly
+    # compared a 32-bit register against an 8-bit selector, folding in 24
+    # unspecified high bits, so `Select::select` and `Swap::swap` could return
+    # the wrong result. Fixed in libcrux-secrets 0.0.6.
+    #
+    # **Re-checked 2026-08-09, when the Android client landed (Phase 5), which
+    # is what the previous note here asked for. The finding changed.** This
+    # crate is now genuinely compiled for aarch64:
+    # `cargo tree -i libcrux-traits --target aarch64-linux-android` resolves
+    # libcrux-secrets 0.0.5 -> libcrux-traits -> libcrux-sha3 -> hpke-rs ->
+    # openmls_rust_crypto -> pouch-core. The earlier wording, "nothing in the
+    # compiled graph calls it", described an x86_64-only project and no longer
+    # describes this one.
+    #
+    # Still accepted, on two grounds rather than the old one:
+    #
+    # 1. The advisory's own impact assessment is availability only — CVSS 4.0
+    #    VC:N/VI:N/VA:H. A wrong result from these primitives is a correctness
+    #    and liveness problem, not a key or plaintext disclosure.
+    # 2. The path that reaches it is libcrux-sha3's SHAKE code, and Pouch's
+    #    ciphersuite is SHA-256 throughout. That is the same reasoning already
+    #    recorded above for RUSTSEC-2026-0074, -0207 and -0208: the crate
+    #    compiles in, the SHAKE entry points are never called.
+    #
+    # Cannot be resolved by upgrading: libcrux-traits 0.0.5 requires
+    # libcrux-secrets 0.0.5, and 0.0.6 is a semver-incompatible bump under
+    # Cargo's 0.0.x rules. `cargo update -p libcrux-secrets` moves nothing.
+    # Blocked behind the same openmls release the entries above wait on.
+    #
+    # This becomes urgent, not merely accepted, if anything here ever selects
+    # a SHA-3 or SHAKE-based ciphersuite.
     "RUSTSEC-2026-0212",
 
     # ---------------------------------------------------------------------

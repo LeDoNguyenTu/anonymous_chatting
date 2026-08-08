@@ -129,3 +129,92 @@ jobs:
         # semver-compatible but source-incompatible upgrade, which is exactly
         # how this job broke (D-029).
         run: cargo check --all-targets --locked
+
+  android-bridge:
+    name: Android JNI bridge — test, clippy, cross-compile
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: clients/android/jni
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+          # The four ABIs Play requires a release APK to cover. arm64 and
+          # armv7 are real phones; the two x86 targets are emulators, which is
+          # how anyone without a device runs this at all.
+          targets: >-
+            aarch64-linux-android,
+            armv7-linux-androideabi,
+            x86_64-linux-android,
+            i686-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: clients/android/jni
+
+      # Host first, because it is the only step that runs the code rather than
+      # just compiling it. A cross-compile proves the ABIs link; these prove
+      # the bridge behaves. If both are going to fail, this should fail first.
+      - name: Format
+        run: cargo fmt -- --check
+      - name: Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: Test on the host
+        run: cargo test --locked
+
+      # The repo-root `cargo audit` job reads the workspace lock file. This
+      # crate has its own, so its transitive tree would otherwise be the one
+      # part of the project nothing scans. Same exception list, because the
+      # advisories it accepts are properties of openmls, not of a client.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      - name: Audit this crate's own lock file
+        # Run from the repository root, because that is where .cargo/audit.toml
+        # lives and cargo-audit resolves its config relative to the working
+        # directory. From inside this crate the exception list would be
+        # invisible and the job would fail on advisories that have already been
+        # assessed and written down — which trains people to ignore it.
+        working-directory: .
+        run: cargo audit --file clients/android/jni/Cargo.lock
+
+      # The NDK is preinstalled on this runner image; ANDROID_NDK_LATEST_HOME
+      # points at it. cargo-ndk supplies the linker and sysroot flags each
+      # target needs, which is the part that is tedious to get right by hand.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-ndk
+      - name: Cross-compile for every shipped ABI
+        # --locked because this crate is outside the workspace and its
+        # committed Cargo.lock is the only thing pinning its transitive
+        # dependencies (D-029). Without it CI re-resolves and can pick up a
+        # semver-compatible but source-incompatible upgrade — which is exactly
+        # how the desktop shell broke once already.
+        run: |
+          cargo ndk \
+            -t arm64-v8a \
+            -t armeabi-v7a \
+            -t x86_64 \
+            -t x86 \
+            build --release --locked
+
+      - name: Confirm every ABI actually produced a library
+        # `cargo ndk` exiting 0 is not the same as four .so files existing. A
+        # target that silently produced nothing would otherwise ship as an APK
+        # that crashes on exactly the devices nobody tested. This is the D-024
+        # pattern: check that the thing did what it was configured to do.
+        run: |
+          set -eu
+          missing=0
+          for target in aarch64-linux-android armv7-linux-androideabi \
+                        x86_64-linux-android i686-linux-android; do
+            so="target/$target/release/libpouch_jni.so"
+            if [ -f "$so" ]; then
+              echo "ok   $target  $(stat -c%s "$so") bytes"
+            else
+              echo "MISSING  $so"
+              missing=1
+            fi
+          done
+          exit "$missing"
