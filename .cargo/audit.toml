@@ -101,6 +101,34 @@ ignore = [
     "RUSTSEC-2026-0097",
 
     # ---------------------------------------------------------------------
+    # rsa 0.9.10, pulled in by the arti dependency tree (Phase 4, D-039):
+    # arti-client -> tor-hscrypto -> tor-key-forge -> ssh-key-fork-arti -> rsa.
+    # Not optional at any link — tor-key-forge depends on it directly, and
+    # ssh-key-fork-arti's `rsa` feature is enabled — so it genuinely compiles
+    # in rather than merely sitting in the lock file.
+    # ---------------------------------------------------------------------
+
+    # Marvin Attack: key recovery through timing sidechannels in RSA. The
+    # advisory has no fixed upgrade — the maintainers state a constant-time
+    # implementation needs a rewrite — so the only alternatives are dropping
+    # arti (SPEC §3.2 names it for Phase 4 transport) or vendoring it, and
+    # vendoring an audited crypto library to dodge an advisory is a worse
+    # outcome than the advisory.
+    #
+    # The vulnerable operation is RSA *private-key decryption*, whose timing
+    # leaks to an attacker who can submit ciphertexts and measure responses.
+    # Pouch performs no RSA operations of its own at all: its ciphersuite is
+    # X25519 / Ed25519 / AES-128-GCM, and v3 onion services are ed25519 and
+    # curve25519 throughout. RSA reaches the graph through arti's SSH-format
+    # key *storage* support. Where the Tor protocol does still use RSA — legacy
+    # relay identity keys in directory documents — it is signature
+    # verification, a public-key operation the advisory does not cover.
+    #
+    # Re-check on any arti upgrade, and specifically if this project ever
+    # starts handling an RSA key for any reason.
+    "RUSTSEC-2023-0071",
+
+    # ---------------------------------------------------------------------
     # Unmaintained crates. Not vulnerabilities; flagged so they stay visible.
     # ---------------------------------------------------------------------
 

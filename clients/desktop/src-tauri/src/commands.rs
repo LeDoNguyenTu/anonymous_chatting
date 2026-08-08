@@ -338,7 +338,7 @@ pub async fn relay_visibility(
 
     state
         .with(|p| {
-            let v = RelayVisibility::for_message(p.inbox_id(), blob_size);
+            let v = RelayVisibility::for_message(p.inbox_id(), blob_size, p.current_route());
             Ok(RelayVisibilityView {
                 inbox_id: v.inbox_id,
                 blob_size: v.blob_size,

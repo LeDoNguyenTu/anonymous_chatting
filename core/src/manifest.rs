@@ -391,27 +391,49 @@ pub struct RelayVisibility {
 impl RelayVisibility {
     /// Builds the honest description for a message of this size.
     ///
-    /// Phase-accurate: until sealed sender lands in Phase 3, the relay *can*
-    /// see which inbox submitted a blob, so that fact appears under `visible`
-    /// rather than under `not_visible`.
-    pub fn for_message(inbox_id: &str, blob_size: usize) -> Self {
+    /// Route-dependent, because the truth is: a direct connection exposes the
+    /// source IP to the relay and a Tor circuit does not. Passing the route in
+    /// rather than assuming one is what keeps this from becoming a screen that
+    /// describes a transport the message did not use.
+    pub fn for_message(inbox_id: &str, blob_size: usize, route: Route) -> Self {
+        let mut visible = vec![
+            "the inbox this was filed under (random, not you)",
+            "the size of this blob",
+            "the hour it arrived, within a 30-day TTL window",
+        ];
+        let mut not_visible = vec![
+            "message content",
+            "your name or your contact's name",
+            "the exact second you sent it",
+            "whether this is a first message or a reply",
+        ];
+        let mut still_inferable = vec!["that you connected", "roughly when", "how often"];
+
+        match route {
+            Route::Tor => {
+                visible.push(
+                    "which inbox submitted it — the wire protocol has no sender field, and Tor hides the source IP too",
+                );
+                not_visible.push("the IP address you connected from — hidden by the Tor circuit");
+                still_inferable.push("that you are using Tor");
+                still_inferable.push(
+                    "your Tor guard node can see connection timing, though not the relay you are talking to",
+                );
+            }
+            Route::Direct | Route::Offline => {
+                visible.push("the IP address you connected from");
+                visible.push(
+                    "which inbox submitted it — sealed sender requires Tor, see transport settings",
+                );
+            }
+        }
+
         Self {
             inbox_id: inbox_id.to_string(),
             blob_size,
-            visible: vec![
-                "the inbox this was filed under (random, not you)",
-                "the size of this blob",
-                "the hour it arrived, within a 30-day TTL window",
-                "the IP address you connected from",
-                "which inbox submitted it — sealed sender is not built yet",
-            ],
-            not_visible: vec![
-                "message content",
-                "your name or your contact's name",
-                "the exact second you sent it",
-                "whether this is a first message or a reply",
-            ],
-            still_inferable: vec!["that you connected", "roughly when", "how often"],
+            visible,
+            not_visible,
+            still_inferable,
         }
     }
 }
@@ -638,20 +660,41 @@ mod tests {
     fn relay_visibility_admits_what_leaks() {
         // The third block is required. A screen that lists only what is
         // protected is the half-truth Prime Directive 3 forbids.
-        let v = RelayVisibility::for_message("7f3ac219", 1024);
+        let v = RelayVisibility::for_message("7f3ac219", 1024, Route::Direct);
         assert!(!v.still_inferable.is_empty(), "the leak block is missing");
 
         // Phase-accurate: sealed sender is not built, so the relay *can* see
         // which inbox submitted a blob and the screen must say so.
         assert!(
-            v.visible
-                .iter()
-                .any(|s| s.contains("sealed sender is not built")),
+            v.visible.iter().any(|s| s.contains("sealed sender")),
             "the screen claims sender privacy the build does not provide"
         );
         assert!(
             v.visible.iter().any(|s| s.contains("IP address")),
             "the screen omits the IP exposure that direct transport has"
         );
+    }
+
+    #[test]
+    fn relay_visibility_over_tor_does_not_claim_ip_exposure() {
+        let v = RelayVisibility::for_message("7f3ac219", 1024, Route::Tor);
+        assert!(
+            !v.visible.iter().any(|s| s.contains("IP address")),
+            "a Tor-routed message must not list IP exposure as visible to the relay"
+        );
+        assert!(
+            v.not_visible.iter().any(|s| s.contains("IP address")),
+            "a Tor-routed message should state the IP is NOT visible, not simply omit the line"
+        );
+        // What Tor does not hide must still be admitted somewhere — the guard
+        // node and connection timing remain observable, and Prime Directive 3
+        // forbids a screen that lists only what is protected.
+        assert!(!v.still_inferable.is_empty());
+    }
+
+    #[test]
+    fn relay_visibility_over_direct_still_admits_ip_exposure() {
+        let v = RelayVisibility::for_message("7f3ac219", 1024, Route::Direct);
+        assert!(v.visible.iter().any(|s| s.contains("IP address")));
     }
 }
