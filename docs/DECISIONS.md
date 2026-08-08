@@ -1482,3 +1482,82 @@ now performs exactly this check when `POUCH_TEST_ONION` names a Pouch relay,
 and asserts bootstrap alone when it does not.
 
 
+
+---
+
+## D-044 — Cover traffic not built this phase; deferred as a stop-and-ask
+**Date:** 2026-08-09 · **Status:** accepted
+
+SPEC's Phase 4 scope line names "optional cover traffic" alongside fixed-size
+padding, but no section of SPEC specifies what shape it should take — how
+often, what size, what triggers it, or how a receiver distinguishes real
+traffic from cover traffic without that distinction itself leaking something.
+Inventing answers to those questions now would be exactly the class of
+decision SPEC §2.6 reserves for a stop-and-ask. "A task seems to require
+writing a new cryptographic construction" extends naturally to a new
+traffic-shaping protocol: the failure modes are the same category, just
+outside the AEAD.
+
+The specific trap worth naming, because it is not obvious: cover traffic that
+is distinguishable from real traffic is worse than no cover traffic. It adds
+cost and bandwidth while an observer filters it out, and it can make real
+traffic *easier* to identify by contrast. Getting that indistinguishability
+right is a design problem with published literature behind it, not something
+to improvise inside an implementation task.
+
+Phase 4's actual exit criteria (SPEC §9) do not require it: messaging over
+Tor end to end, no client IP in server state, `TOR` shown accurately in the
+Custody Strip, and sealed sender reporting as ran. All four ship without it.
+
+Cover traffic stays a tracked, open item. The project owner should specify its
+design — or explicitly decline it — before any implementation is attempted,
+the same way D-037 and D-038 required an explicit decision before the
+attachment pipeline's AEAD and metadata library choices were made rather than
+assumed.
+
+**Rejected: build something reasonable now and refine later.** A traffic
+pattern is observable from the moment it ships. Unlike an internal refactor, a
+wrong first version is not private — it is broadcast to every observer for as
+long as it runs, and changing it later is itself a distinguishable event.
+
+---
+
+## D-045 — Tor applies to every relay-facing command, not the two the plan named
+**Date:** 2026-08-09 · **Status:** accepted
+
+The Phase 4 plan wired the CLI's Tor opt-in into `send` and `receive`, on the
+reasoning that those are the two commands the phase's exit criterion needs to
+demonstrate. Reading the CLI showed four commands reach the relay, not two:
+`add` uploads an MLS Welcome and `send-file` uploads an attachment. Only
+`backup import` is genuinely local despite being `async` — it decrypts a file
+and writes to the local store.
+
+Wiring half of them would have produced a specific, quiet failure: a user who
+set `POUCH_RELAY_TOR_ONION`, then ran `pouch-cli add`, would have handed their
+IP address to the relay at the exact moment they were establishing who they
+talk to — while every later `send` truthfully reported `TOR`. Nothing would
+have been lying; the manifest would have been accurate about each message.
+The user's belief about their own exposure would simply have been wrong, which
+is the shape D-024 describes and the reason Prime Directive 3 exists.
+
+**The fix is structural rather than repeated.** `config::open_for_relay()` is
+the single place that decides, and all four commands open through it. Four
+copies of the same two-line conditional is four places for a fifth network
+command to be forgotten; one helper means a new command inherits Tor by
+construction. Commands that only read local state still call `Pouch::open`
+directly and stay instant, because a Tor bootstrap on `pouch-cli list` would
+be a cost with no matching benefit.
+
+**The environment-variable contract moved into the core**, as
+`TorRelayConfig::from_env(default_state_dir)`. Two clients spelling
+`POUCH_RELAY_TOR_ONION` separately is two chances to drift, and a client that
+reads a name the operator does not set fails by silently staying on the direct
+route — again silent, again the wrong direction. The core defines the names;
+the caller supplies only the fallback state directory, because where a host
+application keeps its data is not something a library can know. The library
+never calls this itself: whether a deployment takes configuration from the
+environment at all stays the host's decision.
+
+**Rejected: follow the plan literally and note the gap.** A known partial
+protection, documented but shipped, is the thing this project has repeatedly
+decided not to do. The cost of the wider fix was one helper function.

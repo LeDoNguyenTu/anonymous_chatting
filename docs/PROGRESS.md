@@ -12,13 +12,13 @@ Do not begin a phase before the previous phase meets its exit criteria.
 
 | | |
 |---|---|
-| **Phase complete** | 0 — Foundation · 1 — Working 1:1 encrypted chat · 2 — Storage control and hardening · 3 — Attachments and compression, all **fully** |
-| **Phase next** | 4 — Tor transport, then sealed sender. **In progress, not complete — Task 1 of 14 done and reviewed clean.** Full implementation plan: `docs/superpowers/plans/2026-08-02-phase-4-tor-and-sealed-sender.md`, executed via `superpowers:subagent-driven-development` in an isolated git worktree — `.worktrees/phase-4-tor/` on branch `phase-4-tor-sealed-sender`, branched from `develop` @ `dd3eaa2`. **Task 1** (pin `arti-client`/`tor-hsservice`/`tor-rtcompat =0.43.0`, D-039) found and resolved a real, verified conflict along the way: `arti-client` unconditionally needs a newer `rusqlite` than this workspace's `=0.32.1` pin (used for the SQLCipher-encrypted local database); resolved by bumping `rusqlite` to `=0.39.0` plus two forced companion bumps (`thiserror`, `serde`) and a small `server/src/store.rs` fix, all verified via the full 163-test suite before being committed — full reasoning in `docs/DECISIONS.md` D-040. **Tasks 2–14 remain**: message-level padding, the Tor-routed `RelayClient`, the relay-as-onion-service, honest per-route sealed-sender reporting, CLI/desktop Tor wiring, the Transport settings screen (SPEC §6.7.9), and phase close-out (threat model, SPEC.md, version bump). **To resume in a new session:** open `.worktrees/phase-4-tor` (or `git checkout phase-4-tor-sealed-sender`, pushed to origin), read the SDD ledger at `.worktrees/phase-4-tor/.superpowers/sdd/2026-08-02-phase-4-tor-and-sealed-sender/progress.md` for exactly which task is next and what's been decided, then continue via `superpowers:subagent-driven-development` against the plan file — the ledger's own resume protocol picks up at the first task without a `complete` line. |
-| **Branches** | `main` (repository default) and `develop`, both pushed; `main` intentionally left behind `develop` — see the note in this section's history for why. `phase-4-tor-sealed-sender` (Phase 4 work in progress, pushed to origin, not yet merged to `develop` — merges via fast-forward once its own final review is clean, per `superpowers:finishing-a-development-branch`) |
-| **Blocked on** | Nothing currently outstanding. Task 1's dependency conflict (above) was found and resolved within the task itself, not left open. |
-| **Tests** | 134 Rust core + 13 end-to-end + 12 relay + 4 server-blindness = 163 Rust · 36 frontend — unchanged by Task 1 (a dependency-pin task adds no new tests; Task 2 onward will move this number) |
-| **CI** | confirmed green via `gh run list` for the Phase 2, initial Phase 3 (compression), and desktop-backup-UI commits. The attachment pipeline commit (core+CLI) and the desktop attachment UI commit are verified locally the same way (fmt, clippy -D warnings, full test suite, both guardrail scripts) but not yet confirmed in Actions at last check — confirm before trusting them the same way. Anything that touches a screen (backup, attachments) has never been seen in a running GUI window — this environment cannot launch the Tauri shell — so "verified" for those means build/typecheck/test only. |
-| **Version** | `0.1.2`, bumped twice this session (`0.1.0` → `0.1.1` → `0.1.2`) per the project owner's instruction to bump after each phase or critical fix (2026-08-02). Four files move together — see `docs/CONTEXT.md`'s conventions list. |
+| **Phase complete** | 0 — Foundation · 1 — Working 1:1 encrypted chat · 2 — Storage control and hardening · 3 — Attachments and compression · 4 — Tor transport and sealed sender, all **fully**. Phase 4's exit criteria are met and were verified against the live Tor network, not asserted — see that phase's section below for exactly what was run and what was not. |
+| **Phase next** | 5 — Android client. Not started. |
+| **Branches** | `main` (repository default) and `develop`, both pushed; `main` intentionally left behind `develop` — see the note in this section's history for why. `phase-4-tor-sealed-sender` holds all Phase 4 work, pushed to origin. **Not yet merged to `develop`** — it merges by fast-forward once its final review is clean, per `superpowers:finishing-a-development-branch`. The worktree is `.worktrees/phase-4-tor/`. |
+| **Blocked on** | Nothing. One open *design* item, deliberately deferred rather than blocked: cover traffic (D-044) needs a specification from the project owner before anyone implements it. |
+| **Tests** | 145 Rust core + 14 end-to-end + 14 relay + 4 server-blindness = **177 Rust** (1 ignored — the live-Tor test, which needs real network access and is run by hand) · **44 frontend**. Was 163 Rust / 36 frontend at the start of Phase 4. |
+| **CI** | green on `phase-4-tor-sealed-sender` through commit `2a52a71`, confirmed via `gh run list`. Everything below was also verified locally: `cargo fmt --check`, `clippy -D warnings`, the full suite, both guardrail scripts, `cargo audit`, the desktop crate's own `cargo check --all-targets --locked`, and the frontend's typecheck/test/build. **The Tauri window has still never been launched** — this environment cannot run a GUI — so every claim about how a screen *looks* rests on build, typecheck, and `renderToStaticMarkup` assertions, not on anyone seeing it. |
+| **Version** | `0.1.3`, bumped at Phase 4 close-out per the project owner's instruction to bump after each phase or critical fix. Four files move together — see `docs/CONTEXT.md`'s conventions list. |
 
 ### Owed to the project owner
 
@@ -715,53 +715,122 @@ process itself created.
 
 ---
 
-## Phase 4 — Tor transport, then sealed sender · IN PROGRESS · started 2026-08-02
+## Phase 4 — Tor transport, then sealed sender · complete · 2026-08-09
 
-Not a close-out section — Phase 4 is 1 of 14 planned tasks in, not complete. This
-is here so a session that only reads this file (rather than opening the worktree)
-still knows where things stand and where to find the rest.
+Exit criteria met, and the important ones were verified against the live Tor
+network rather than asserted. What was *not* verified is stated at the end of
+this section rather than left for someone to discover.
 
-**Where the work actually lives.** An isolated git worktree at
-`.worktrees/phase-4-tor/`, on branch `phase-4-tor-sealed-sender` (branched from
-`develop` at `dd3eaa2`, pushed to origin). The full 14-task implementation plan is
-`docs/superpowers/plans/2026-08-02-phase-4-tor-and-sealed-sender.md`, being
-executed task-by-task via `superpowers:subagent-driven-development` — fresh
-implementer subagent per task, independent task review after each, one broad
-review at the end before merging back into `develop`. The SDD ledger at
-`.worktrees/phase-4-tor/.superpowers/sdd/2026-08-02-phase-4-tor-and-sealed-sender/progress.md`
-is the authoritative record of exactly which tasks are done, their commit ranges,
-and any review findings — more current than this section will stay as work
-continues, by design.
+**Where the work lives.** Worktree `.worktrees/phase-4-tor/`, branch
+`phase-4-tor-sealed-sender` (branched from `develop` at `dd3eaa2`, pushed to
+origin, not yet merged). The 14-task plan is
+`docs/superpowers/plans/2026-08-02-phase-4-tor-and-sealed-sender.md`; the SDD
+ledger beside it in `.superpowers/sdd/` records per-task findings and is
+gitignored, so it exists only in that worktree.
 
-**Task 1 — done, reviewed clean.** Pinned `arti-client`/`tor-hsservice`/
-`tor-rtcompat =0.43.0` for the relay-as-onion-service and the client's Tor
-transport (D-039), raising the workspace `rust-version` from `1.82` to `1.89` to
-match. Doing this surfaced a real, structural conflict rather than a theoretical
-one: `arti-client` unconditionally depends on `tor-dirmgr`, which unconditionally
-requires `rusqlite >=0.36.0,<0.40.0` — incompatible with this workspace's
-pre-existing `rusqlite =0.32.1` pin (the crate D-024's "dangerous" silently-
-unencrypted-database incident was about), because both link the native `sqlite3`
-library and Cargo will not resolve two versions of a `links`-declaring crate in
-one graph. Confirmed via the actual Cargo resolver error and crates.io's own
-dependency metadata, not assumed from reading version ranges. Resolved by
-bumping `rusqlite` to `=0.39.0` (same `bundled-sqlcipher` feature, confirmed
-present), which forced two further pins (`thiserror` `2.0.9→2.0.19`, `serde`
-`1.0.216→1.0.225`, both low-risk API-stable crates) and one real code fix
-(`rusqlite 0.39.0` dropped `ToSql` for raw `u64`; three `as i64` casts in
-`server/src/store.rs`, matching the cast pattern `core/src/storage/` already
-used). Verified by the full 163-test suite passing, not just a clean compile —
-full reasoning in `docs/DECISIONS.md` D-040. Task-reviewed: spec compliant,
-approved, zero Critical/Important findings.
+### What shipped
 
-**Tasks 2–14 — not started.** Message-level padding (extending the existing
-attachment padding to text messages, D-041), the Tor-routed `RelayClient`
-backend (`arti-client` + `hyper`, since `reqwest` has no custom-connector hook),
-the relay running as an actual onion service (`tor-hsservice`), honest per-route
-sealed-sender reporting in the manifest, CLI and desktop wiring for the new
-transport, the Transport settings screen (SPEC §6.7.9), and the phase close-out
-(threat model update, SPEC.md amendment recording that cover traffic was
-deliberately deferred as a stop-and-ask rather than built — D-042 — and the
-version bump). See the plan file for the exact task-by-task breakdown.
+- **Relay as a Tor v3 onion service** (`server/src/onion.rs`), opt-in via
+  `POUCH_RELAY_TOR_STATE`. The direct listener is untouched; both serve the
+  same `axum::Router`. A failed onion launch is printed, not swallowed — an
+  operator who asked for one and silently got only the direct listener would
+  believe they had a protection they do not have.
+- **Tor-routed client transport** (`core/src/transport/tor.rs`) on
+  `arti-client` + `hyper`, because `reqwest` has no custom-connector hook and
+  arti has no in-process SOCKS listener.
+- **`Pouch::connect_tor` / `use_direct_relay`**, with `current_route()` feeding
+  the manifest, the Custody Strip, and `RelayVisibility`. `connect_tor` never
+  falls back to Direct on failure.
+- **Message payloads padded** into the same fixed buckets attachments already
+  used (D-041). This is a wire-format break; there is no deployed population to
+  migrate.
+- **Manifest stage 4 (`PADDED`) and stage 6 (`SENDER SEALED`) now report
+  honestly per route.** Over Tor, stage 6 reads as ran; on the direct route it
+  reads not-applicable *with the reason*, rather than disappearing.
+- **`RelayVisibility` is route-aware.** Over Tor the IP exposure moves
+  explicitly into `not_visible` rather than vanishing from the list, and
+  `still_inferable` gains "that you are using Tor" plus the guard-node note.
+- **CLI over Tor**, covering every relay-facing command — `add`, `send`,
+  `send-file`, `receive` — through one `config::open_for_relay()` helper
+  (D-045).
+- **Desktop Transport settings screen** (SPEC §6.7.9) plus the three commands
+  behind it, and `src/lib/fakeBridge.ts`, this project's first reusable test
+  fake for `PouchBridge`.
+
+### What was decided
+
+| | |
+|---|---|
+| D-039 | `arti` pinned at 0.43.0; workspace `rust-version` raised to 1.89. |
+| D-040 | `rusqlite` 0.32.1 → 0.39.0 to resolve a real arti conflict, plus two forced companion bumps. |
+| D-041 | Fixed-size padding extended to message payloads; wire-format break. |
+| D-042 | `arti-client` needs the `onion-service-client` feature. D-039's feature reasoning was wrong. |
+| D-043 | Four dependencies the onion service needed, and the rustls crypto-provider choice. |
+| D-044 | Cover traffic deferred as a stop-and-ask, not built. |
+| D-045 | Tor applies to every relay-facing command; the env-var contract lives in the core. |
+
+### Verified against the live Tor network
+
+The relay published a real v3 onion address —
+`vl2bppfcivlq7667zp2ayegkpc7i4425kbj7q4dis6go7atpq7w7fjad.onion` (deterministic
+for a given state directory, so it is reproducible). Descriptor publication took
+roughly 100 seconds before a client could find it. A separate client then
+bootstrapped its own Tor connection (~7 s cold), dialled that address, and got
+**200 from `/health`** — the whole path: circuit, `TorConnector`, `TorStream`,
+hyper, the relay's real axum router, and back. An earlier attempt at `/`
+returned 404, which was itself evidence the genuine router was answering rather
+than a stub.
+
+`core/src/transport/tor.rs`'s ignored test
+`a_real_tor_bootstrap_succeeds_against_the_live_network` performs exactly this
+check when `POUCH_TEST_ONION=host:port` names a Pouch relay, and asserts
+bootstrap alone when it does not. Run it with `cargo test -- --ignored`.
+
+Note for anyone repeating this: the onion service accepts streams on **any**
+port, because `handle_rend_requests` is not port-filtered. The client used
+`:80`.
+
+### Two findings that would have shipped
+
+Both compiled clean, passed clippy, and passed the entire test suite. Only
+running a real circuit exposed them, and both are the D-024 pattern again — a
+dependency accepting a configuration and quietly not providing the capability.
+
+1. **`arti-client` was missing `onion-service-client`** (D-042). Without it
+   arti refuses `.onion` addresses *at runtime*. Every Tor send would have
+   failed in the field.
+2. **A dead `rustls = "=0.23.20"` pin** (D-043). No workspace member named it,
+   so the lock had already resolved 0.23.43 through arti. Once the relay named
+   rustls directly, keeping the old pin would have put two rustls versions in
+   the graph — and installed a crypto provider into the registry of the version
+   arti is *not* using. A silent no-op.
+
+### What was NOT verified
+
+- **The Tauri window has never been launched.** This environment cannot run a
+  GUI. Everything claimed about the Transport settings screen rests on
+  `tsc --noEmit`, `vite build`, and `renderToStaticMarkup` assertions. Nobody
+  has seen it render.
+- **The desktop client has never talked to a relay over Tor.** The backend
+  commands compile and the core path beneath them is the same one the CLI and
+  the live-network test exercise, but that specific end-to-end path was not run.
+- **The CLI-over-Tor demo in the plan's Task 10 Step 4 was not executed.** The
+  Tor path it exercises was proven at the transport layer (above); the
+  full two-client demo through onion addressing was not run end to end.
+
+### Open
+
+- **Cover traffic (D-044).** Named in Phase 4's scope, deliberately not built.
+  Needs a design decision from the project owner — frequency, size, trigger,
+  and how a receiver distinguishes it from real traffic without that
+  distinction leaking — before anyone implements it.
+- **One unreproducible flake.**
+  `two_clients_exchange_text_and_the_relay_learns_nothing` (end-to-end) failed
+  once during Task 8, then passed in isolation and in every full run since. The
+  assertion text was not captured before it stopped reproducing. The test
+  spawns a relay on an ephemeral port, so a transient bind/timing issue is
+  plausible — but that is a hypothesis, not a diagnosis. **If CI hits it,
+  capture the failure output before doing anything else.**
 
 ---
 
