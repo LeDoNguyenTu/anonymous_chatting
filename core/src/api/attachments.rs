@@ -14,7 +14,6 @@ use crate::attachments;
 use crate::crypto::{CryptoError, AEAD_NAME, CIPHERSUITE_NAME, KEY_AGREEMENT_NAME, SIGNATURE_NAME};
 use crate::manifest::Manifest;
 use crate::storage::{Direction, QueuedMessage, StoredAttachment, StoredMessage};
-use crate::transport::Route;
 
 use super::compression;
 use super::{now, ApiError, Payload, Pouch};
@@ -144,7 +143,11 @@ impl Pouch {
             }
         };
 
-        manifest.routed(Route::Direct, self.relay.address());
+        // Same pattern as `send_message`: one route value shared by stages 6
+        // and 7, so the two can never disagree about how this went out.
+        let route = self.relay.route();
+        manifest.routed(route, self.relay.address());
+        manifest.sealed(route);
         manifest.queued(&message_id);
         manifest.delivered();
 

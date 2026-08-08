@@ -10,7 +10,6 @@ use crate::crypto::{
 };
 use crate::manifest::Manifest;
 use crate::storage::{Direction, QueuedMessage, StoredAttachment, StoredContact, StoredMessage};
-use crate::transport::Route;
 
 use super::compression;
 use super::{now, ApiError, Message, Payload, Pouch, Received};
@@ -143,7 +142,12 @@ impl Pouch {
             }
         };
 
-        manifest.routed(Route::Direct, self.relay.address());
+        // One route value for both stages. Reading `self.relay.route()` twice
+        // would let a transport switch between the two calls produce a
+        // manifest that names one route at stage 7 and seals for another.
+        let route = self.relay.route();
+        manifest.routed(route, self.relay.address());
+        manifest.sealed(route);
         manifest.queued(&message_id);
         manifest.delivered();
 
