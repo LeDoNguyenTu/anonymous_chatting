@@ -1,9 +1,10 @@
-//! Fixed-size padding buckets (SPEC §7.1 step 3).
+//! Fixed-size padding buckets (SPEC §7.1 step 3, extended to message
+//! payloads in Phase 4).
 //!
-//! Blunts size fingerprinting: a 70 KB photo and a 200 KB photo produce
-//! identically sized blobs once both land in the 256 KB bucket, so the relay
-//! — which sees nothing else about an attachment — cannot tell them apart by
-//! size either.
+//! Blunts size fingerprinting: a 70 KB photo and a 200 KB photo — or a short
+//! reply and a longer one — produce identically sized blobs once both land
+//! in the same bucket, so an observer who sees nothing else about a blob
+//! cannot tell them apart by size either.
 
 const KB: usize = 1024;
 const MB: usize = 1024 * KB;
