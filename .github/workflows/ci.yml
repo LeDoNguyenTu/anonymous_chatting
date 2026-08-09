@@ -273,6 +273,26 @@ jobs:
       - name: Assemble a debug APK
         run: gradle :app:assembleDebug --no-daemon
 
+      # Configuration only, which is a different thing from a build and is the
+      # reason this step exists.
+      #
+      # v0.1.6 was tagged and its release job died in `assembleRelease` with
+      # `path may not be null or empty string` — a signing config that read an
+      # empty POUCH_KEYSTORE_FILE as a path rather than as absent. Nothing about
+      # that needed the .so files, or R8, or a keystore: it failed while Gradle
+      # was still reading the build script. But because this job only ever
+      # configured the *debug* variant, the release variant's configuration was
+      # first evaluated forty minutes into a tagged release.
+      #
+      # --dry-run resolves the release variant and its task graph, then executes
+      # nothing. It costs seconds and it closes that gap. It does not prove the
+      # release *builds* — `nativeLibsPresent` is a doLast and will not run here,
+      # and R8 is not exercised — and it is not meant to; the release workflow
+      # owns that. This proves only that a tag will not be spent discovering a
+      # typo.
+      - name: Configure the release variant without building it
+        run: gradle :app:assembleRelease :app:bundleRelease --dry-run --no-daemon
+
       - name: Confirm the manifest requests INTERNET and nothing else
         # SPEC §2.2 is a promise about what this app can do, and a permission
         # can arrive transitively from a library's own manifest during merge

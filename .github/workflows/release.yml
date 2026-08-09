@@ -418,9 +418,17 @@ jobs:
               compiles, its bridge is unit-tested on a host, and its JNI
               marshalling has never executed anywhere. Treat the first launch as
               the first test. `THREAT_MODEL.md` §4 covers this explicitly.
-            - **The Android relay address is fixed at build time.** If this build
-              was made without `POUCH_RELAY_URL`, the app points at the emulator
-              loopback and will queue every message without delivering it.
+            - **Android asks for the relay address on first run** and stores it
+              in the app's own private preferences (D-051). The address compiled
+              into the build is only what that field is pre-filled with. Left at
+              its default it is an emulator loopback, unreachable from a handset,
+              and every message queues without being delivered — so the first-run
+              screen cannot be skipped. Changing it later restarts the app,
+              because the core reads its relay once per process.
+            - The release APK is **not obfuscated or minified**. R8 is off
+              deliberately: this source is public, so renaming its classes would
+              protect nothing, and the two Rust entry points plus 25 decoded DTOs
+              are all reached by name at runtime.
             - Android has no Keystore integration; the database key is a file in
               the app's private directory (D-035). Same as desktop without a
               passphrase.

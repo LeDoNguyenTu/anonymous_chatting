@@ -1903,3 +1903,61 @@ implying the app is peer-to-peer.
 - **A Windows service.** Survives reboots, which is the right answer for a real
   deployment and the wrong one for software a person is trying out — an
   uninstall that leaves a service running and a socket open is a bad surprise.
+
+---
+
+## D-053 — The Android release build is not minified or obfuscated
+
+**Date:** 2026-08-09
+**Status:** accepted
+
+`isMinifyEnabled` was `true` in the release build type. It arrived with the
+Android Studio template and was never argued for, which is the actual problem —
+R8 changes what ships, and nothing in this repository had made a case for it.
+
+It is now `false`, and `proguard-rules.pro` is written and correct so that
+reversing this is one line rather than a debugging session.
+
+### Why off
+
+**Obfuscation protects nothing here.** The source is public. Renaming
+`PouchNative` to `a` in a build whose code anyone can read is the shape SPEC
+§2.5 calls security theatre: it looks like hardening, costs real legibility, and
+defends against an attacker who does not exist. The cost is concrete — a stack
+trace from a stranger's crash is unreadable without a mapping file, and nothing
+in the release workflow collects one.
+
+**The size argument does not survive contact with the numbers.** Each ABI
+carries roughly 37 MB of native library — arti, OpenMLS and SQLCipher — none of
+which R8 can touch. Shrinking Kotlin and Compose bytecode off that is a
+single-digit-megabyte win on an artifact dominated by Rust.
+
+**Every way R8 breaks this app breaks it at runtime.** Three name-based
+couplings cross the JNI boundary, and R8's model is that an unreferenced symbol
+is unused:
+
+- `lib.rs` exports `Java_com_pouch_core_PouchNative_nativeStart` and
+  `…_nativeCall`. The package and class name are *inside the symbol*.
+- Errors are thrown by looking up the literal string
+  `"com/pouch/core/PouchException"`.
+- 25 `@Serializable` DTOs are decoded by field name from JSON the Rust side
+  wrote. A renamed field does not throw — it decodes to its default.
+
+The first two fail as `UnsatisfiedLinkError` on launch. The third fails silently,
+which is worse. On a client that has never run on a device, adding a transform
+whose failures are invisible until first launch is the opposite of Prime
+Directive 4.
+
+### Rejected
+
+- **Keeping R8 on with the rules in `proguard-rules.pro`.** The rules are
+  probably right. "Probably right" is not something to establish for the first
+  time on the artifact a stranger installs.
+- **`isShrinkResources` without obfuscation.** Trims unused resources, which are
+  not what is large here, and still reorganises the APK on a build nobody has
+  launched.
+
+### Revisit when
+
+The app has run on a device, crash reports are collected somewhere with a
+mapping file, and someone can state what the reduction actually buys.

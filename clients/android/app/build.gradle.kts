@@ -103,19 +103,54 @@ android {
 
     // The properties file wins over the environment. A developer who has both
     // is working locally, and a local keystore is the one they meant.
-    val storePath = keystoreProperties.getProperty("storeFile")
-        ?: System.getenv("POUCH_KEYSTORE_FILE")
+    //
+    // Blank counts as absent, not as present-and-empty. That distinction is the
+    // whole reason this reads as a function rather than four `?:` chains: the
+    // release workflow passes POUCH_KEYSTORE_FILE as an *empty string* when the
+    // repository has no signing secrets, so `System.getenv` returned "" rather
+    // than null, the null check below passed, and `file("")` threw
+    // `path may not be null or empty string` while Gradle was still configuring
+    // — before a single task ran.
+    //
+    // Worth stating plainly, because it is the same shape as the OpenSSL
+    // failure in the Windows job: the unsigned path is the one every build
+    // without a keystore takes, and it was the only path never exercised
+    // locally, because a developer machine leaves the variable unset rather
+    // than setting it to nothing.
+    fun signingSetting(propertyName: String, envName: String): String? =
+        (keystoreProperties.getProperty(propertyName) ?: System.getenv(envName))
+            ?.takeIf { it.isNotBlank() }
+
+    // Resolved to a File once, here, rather than re-derived inside the signing
+    // config. Both the missing-value case and the missing-file case collapse to
+    // null, so there is exactly one thing for the block below to test.
+    val storePath = signingSetting("storeFile", "POUCH_KEYSTORE_FILE")
+    val keystoreFile = storePath?.let { file(it) }?.takeIf { it.exists() }
+
+    // Said out loud at configuration time. An unsigned APK cannot be installed,
+    // and learning that from `adb install` is worse than reading it in the build
+    // log. `println` rather than `logger`, because inside `android { }` the
+    // receiver chain is the extension before the project, and this file has
+    // already been bitten once by a bare name resolving to the wrong scope.
+    if (keystoreFile == null) {
+        println(
+            if (storePath == null) {
+                "Pouch: no release keystore configured. assembleRelease will " +
+                    "produce an unsigned APK, which cannot be installed."
+            } else {
+                "Pouch: no keystore at $storePath. assembleRelease will " +
+                    "produce an unsigned APK, which cannot be installed."
+            },
+        )
+    }
 
     signingConfigs {
-        if (storePath != null && file(storePath).exists()) {
+        if (keystoreFile != null) {
             create("release") {
-                storeFile = file(storePath)
-                storePassword = keystoreProperties.getProperty("storePassword")
-                    ?: System.getenv("POUCH_KEYSTORE_PASSWORD")
-                keyAlias = keystoreProperties.getProperty("keyAlias")
-                    ?: System.getenv("POUCH_KEY_ALIAS")
-                keyPassword = keystoreProperties.getProperty("keyPassword")
-                    ?: System.getenv("POUCH_KEY_PASSWORD")
+                storeFile = keystoreFile
+                storePassword = signingSetting("storePassword", "POUCH_KEYSTORE_PASSWORD")
+                keyAlias = signingSetting("keyAlias", "POUCH_KEY_ALIAS")
+                keyPassword = signingSetting("keyPassword", "POUCH_KEY_PASSWORD")
             }
         }
     }
@@ -130,7 +165,34 @@ android {
             versionNameSuffix = "-debug"
         }
         release {
-            isMinifyEnabled = true
+            // Off, deliberately, and this is a reversal — it was `true`, which
+            // is the template default and was never argued for.
+            //
+            // Three reasons, in order of weight:
+            //
+            // 1. Obfuscating this app protects nothing. The source is public.
+            //    Renaming `PouchNative` to `a` in a build whose code anyone can
+            //    read is the definition of security theatre, which SPEC §2.5
+            //    forbids — and it costs something real, because a stack trace
+            //    from a stranger's crash becomes unreadable without a mapping
+            //    file that nothing here collects.
+            //
+            // 2. The size win is a rounding error. This APK is ~37 MB of native
+            //    library per ABI, none of which R8 touches. Shrinking Kotlin and
+            //    Compose bytecode off that saves single-digit megabytes.
+            //
+            // 3. Every way R8 can break this app breaks it at runtime, on a
+            //    build that has never launched anywhere. The Rust side reaches
+            //    back for `com.pouch.core.PouchNative` and `PouchException` by
+            //    name, and 25 DTOs are decoded by field name; a wrong keep rule
+            //    surfaces as UnsatisfiedLinkError or a field that silently
+            //    decodes to its default. Prime Directive 4 — ship narrow and
+            //    working.
+            //
+            // `proguard-rules.pro` is written and correct regardless, so this is
+            // one line to reverse once the app has run on a device and there is
+            // a reason to want it.
+            isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
