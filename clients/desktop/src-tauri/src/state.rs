@@ -61,8 +61,8 @@ pub fn database_path(app_data_dir: PathBuf) -> PathBuf {
 /// The relay this build talks to.
 ///
 /// Loopback by default, which `RelayClient::new` only tolerates because it is
-/// loopback (D-017). A deployment overrides it with `POUCH_RELAY_URL` and
-/// `POUCH_RELAY_SPKI_PIN` — see [`RelayConfig::from_env`] for why that is
+/// loopback (D-017). A deployment overrides it with `POUCH_RELAY` and
+/// `POUCH_RELAY_PIN` — see [`RelayConfig::from_env`] for why that is
 /// deployment configuration rather than a setting the window can change.
 ///
 /// Without this a distributed build could only ever reach a relay on the

@@ -99,6 +99,15 @@ jobs:
 
           exit "$missing"
 
+      # Before the release is published, not after. The checksums are the only
+      # thing a user can verify against, so a release must never exist — even
+      # briefly — with binaries and no sums to check them by.
+      - name: Checksums
+        shell: bash
+        run: |
+          cd dist
+          sha256sum * | tee SHA256SUMS.txt
+
       # Kept for workflow_dispatch runs, which produce no release to attach to.
       - uses: actions/upload-artifact@v4
         with:
@@ -122,9 +131,10 @@ jobs:
 
             There is no code-signing certificate for this project, so Windows
             SmartScreen will warn that the publisher is unknown, and it is
-            right to. Verify the SHA-256 below against the file you downloaded
-            before running it — that is a real check, where clicking through
-            the warning is not.
+            right to. Verify the SHA-256 against `SHA256SUMS.txt` below before
+            running anything — that is a real check, where clicking through the
+            warning is not. A matching hash proves the file is the one this
+            build produced. It does not prove the software is safe.
 
             ### What is in this release
 
@@ -134,32 +144,26 @@ jobs:
             | `Pouch.msi` | The same client, for `msiexec` |
             | `pouch-relay.exe` | The relay. One person runs this. |
             | `pouch-cli.exe` | Headless client, for testing without a window |
+            | `SHA256SUMS.txt` | Hashes for all four |
 
             ### Setting it up with another person
 
             See [`docs/TESTING_WITH_A_FRIEND.md`](docs/TESTING_WITH_A_FRIEND.md).
-            The short version: the client talks to `127.0.0.1:8443` unless
-            `POUCH_RELAY_URL` or `POUCH_RELAY_TOR_ONION` says otherwise, so
-            two people on different machines need one of those set.
+
+            The client talks to `127.0.0.1:8443` unless told otherwise, so two
+            people on different machines need one of `POUCH_RELAY` (a relay you
+            host behind TLS, with `POUCH_RELAY_PIN`) or `POUCH_RELAY_TOR_ONION`
+            (the relay's onion address). The onion route is the documented one:
+            it needs no certificate, no domain and no port forwarding.
 
             ### Known limits in this build
 
+            - **Nobody has completed the two-person walkthrough yet.** The
+              build exists and the procedure is written down; it has not been
+              run end to end by two people.
             - The Android client does not ship here and has never run on a
               device.
             - The local database key is a file beside the database unless a
               passphrase is set (D-035). Set a passphrase.
             - Read `docs/THREAT_MODEL.md` §4 before trusting this with
               anything.
-
-      - name: Checksums
-        if: startsWith(github.ref, 'refs/tags/v')
-        shell: bash
-        run: |
-          cd dist
-          sha256sum * | tee SHA256SUMS.txt
-
-      - name: Attach the checksums
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: dist/SHA256SUMS.txt
