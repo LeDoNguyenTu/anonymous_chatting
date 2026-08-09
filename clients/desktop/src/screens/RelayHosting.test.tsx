@@ -111,7 +111,7 @@ describe("RelayHostingView", () => {
    */
   it("makes no reassuring claim about the relay's strength", () => {
     const html = render(RUNNING).toLowerCase();
-    const forbidden = [
+    const forbidden: [string, string][] = [
       ["un", "breakable"],
       ["un", "crackable"],
       ["un", "hackable"],
@@ -119,10 +119,10 @@ describe("RelayHostingView", () => {
       ["military", "-grade"],
       ["completely", " secure"],
       ["totally", " anonymous"],
-    ].map(([a, b]) => a + b);
+    ];
 
-    for (const term of forbidden) {
-      expect(html).not.toContain(term);
+    for (const [head, tail] of forbidden) {
+      expect(html).not.toContain(head + tail);
     }
   });
 });
