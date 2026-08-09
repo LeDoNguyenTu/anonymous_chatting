@@ -27,8 +27,8 @@ android {
         applicationId = "com.pouch"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.5"
+        versionCode = 2
+        versionName = "0.1.6"
 
         // The four ABIs the CI job cross-compiles. Named explicitly so a fifth
         // cannot appear in a release APK without a library behind it.

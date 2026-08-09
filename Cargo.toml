@@ -6,7 +6,7 @@ members = ["core", "server", "clients/cli"]
 exclude = ["clients/desktop/src-tauri"]
 
 [workspace.package]
-version = "0.1.5"
+version = "0.1.6"
 edition = "2021"
 rust-version = "1.89"
 license = "AGPL-3.0-or-later"

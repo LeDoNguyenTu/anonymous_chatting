@@ -3082,7 +3082,7 @@ dependencies = [
 
 [[package]]
 name = "pouch-cli"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "hex",
@@ -3093,7 +3093,7 @@ dependencies = [
 
 [[package]]
 name = "pouch-core"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "argon2",
  "arti-client",
@@ -3131,7 +3131,7 @@ dependencies = [
 
 [[package]]
 name = "pouch-relay"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "arti-client",
