@@ -16,8 +16,8 @@ Do not begin a phase before the previous phase meets its exit criteria.
 | **Phase in progress** | 5 — Android client. **Does not meet its exit criteria and is not close to.** Foundation built and verified as far as this environment allows; every SPEC §6.7 screen except the conversation list is unwritten. See the Phase 5 section below for exactly what exists and what does not. |
 | **Branches** | `main` and `develop`, both pushed; `main` intentionally behind `develop`. `phase-5-android` holds the Phase 5 work, pushed to origin, **not merged**. No worktree this time — the Phase 4 worktree at `.worktrees/phase-4-tor/` is merged and can be removed. |
 | **Blocked on** | Nothing in code. **Two design items need the project owner**, both recorded rather than improvised: cover traffic (D-044) and Android Keystore (D-035, SPEC §2.6 — "an implementation shortcut would mean storing a key in a less protected location"). |
-| **Tests** | 148 Rust core + 14 end-to-end + 14 relay + 4 server-blindness = **180 Rust workspace** (1 ignored — the live-Tor test, run by hand) · **11 Android bridge** (`clients/android/jni`, run on the host) · **44 desktop frontend** · **11 Android JVM** (Custody Strip state mapping — written, never yet executed anywhere). Was 177 Rust / 44 frontend at the end of Phase 4. |
-| **CI** | Two new jobs, `android-bridge` and `android-app`. As of this writing `android-bridge` has passed fmt, clippy, the 11 host tests, and `cargo audit` on its own lock file; **the four-ABI cross-compile had not yet finished, so whether the arti and SQLCipher trees link for Android is not yet known.** Everything else was verified locally on Windows: fmt, clippy `-D warnings`, the full workspace suite, both guardrail scripts, the desktop crate's `cargo check --all-targets --locked`, and the JNI crate's own `--locked` test run. |
+| **Tests** | 148 Rust core + 14 end-to-end + 14 relay + 4 server-blindness = **180 Rust workspace** (1 ignored — the live-Tor test, run by hand) · **11 Android bridge** (`clients/android/jni`, run on the host) · **44 desktop frontend** · **11 Android JVM** (Custody Strip state mapping, passing in CI). Was 177 Rust / 44 frontend at the end of Phase 4. |
+| **CI** | Two new jobs, `android-bridge` and `android-app`, **both green on the first run**. `android-bridge`: fmt, clippy, the 11 host tests, `cargo audit` on its own lock file, and the four-ABI cross-compile — so the arti, openmls and SQLCipher trees **do** link for Android (D-047 confirmed, not predicted). `android-app`: the 11 Custody Strip JVM tests, lint, `assembleDebug`, and a check on the *merged* manifest showing INTERNET and nothing else. Everything else was verified locally on Windows: fmt, clippy `-D warnings`, the full workspace suite, both guardrail scripts, the desktop crate's `cargo check --all-targets --locked`, and the JNI crate's own `--locked` test run. What CI does **not** show is anything executing on a device — see the Phase 5 section. |
 | **Version** | `0.1.4`. Marks **Phase 5 in progress**, not Phase 5 complete. Six files now move together — see `docs/CONTEXT.md`, whose explanation of *why* was wrong until this session. |
 
 ### Owed to the project owner
@@ -977,13 +977,26 @@ Not fixable by upgrading: `libcrux-traits 0.0.5` requires `libcrux-secrets
 
 Read this before believing anything above implies a working Android app.
 
-- **No Android cross-compile has completed anywhere.** At the time of writing
-  the `android-bridge` job had passed fmt, clippy, the host tests and the
-  audit, and was still running the four-ABI build. **Whether `arti`, `openmls`
-  and SQLCipher actually link for Android is not yet known.** D-047's vendored
-  OpenSSL is a prediction about what would otherwise fail, not a confirmed fix.
-- **No Kotlin has been compiled.** Not once, anywhere. The `android-app` job is
-  the first attempt. Expect it to need iteration.
+- **Nothing has run on a device or an emulator.** This is the important one, and
+  everything below is a qualification of it. CI now proves the code *compiles*
+  and that its host-testable decisions are *correct*; it proves nothing about
+  what happens when the JVM actually calls across the boundary. The JNI
+  marshalling itself — `read_string`, the exception throw, the `jstring` return
+  — has still never executed anywhere.
+- **The cross-compile does pass**, which was an open question when the section
+  above was drafted. All four ABIs link, so `arti`, `openmls` and SQLCipher do
+  build for Android and D-047's vendored OpenSSL was the right call rather than
+  a guess: `aarch64` 37.0 MB, `armv7` 26.5 MB, `x86_64` 36.5 MB, `i686` 36.2 MB,
+  each confirmed by stat rather than by the build's exit code.
+- **The Kotlin does compile**, which was also open. `:app:testDebugUnitTest`,
+  `:app:lintDebug` and `:app:assembleDebug` all pass, and the 11 Custody Strip
+  tests run green. An earlier draft of this section said no Kotlin had been
+  compiled anywhere and that the job should be expected to need iteration; it
+  passed first time, and leaving that claim would have under-reported what is
+  actually verified.
+- **The merged manifest was checked, not just the source one.** It requests
+  INTERNET and nothing else, which is the only way to know a library did not
+  contribute a permission during manifest merge.
 - **No APK exists.** No device, no emulator, no signing key. The release build
   is deliberately unsigned: a release keystore is the project owner's to hold,
   and generating one in CI would put the app's identity somewhere it does not
