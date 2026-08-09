@@ -13,12 +13,12 @@ Do not begin a phase before the previous phase meets its exit criteria.
 | | |
 |---|---|
 | **Phase complete** | 0 · 1 · 2 · 3 · 4, all **fully**. Phase 4's exit criteria were verified against the live Tor network, not asserted. Merged to `develop` by the project owner via PR #3 (`c2f3197`). |
-| **Phase in progress** | 5 — Android client. **Does not meet its exit criteria and is not close to.** Foundation built and verified as far as this environment allows; every SPEC §6.7 screen except the conversation list is unwritten. See the Phase 5 section below for exactly what exists and what does not. |
+| **Phase in progress** | 5 — Android client. **Does not meet its exit criteria and cannot from this environment**, whatever else is written: the criterion is an APK running on a physical device exchanging messages with the desktop client, and there is no device, no emulator and no signing key here. Foundation built and verified as far as compilation reaches; every SPEC §6.7 screen except the conversation list is unwritten. Alongside it, **packaging work landed out of phase order** — a distributable Windows build, because that unblocks two people actually using this and blind Compose screens do not. See both sections below. |
 | **Branches** | `main` and `develop`, both pushed; `main` intentionally behind `develop`. `phase-5-android` holds the Phase 5 work, pushed to origin, **not merged**. No worktree this time — the Phase 4 worktree at `.worktrees/phase-4-tor/` is merged and can be removed. |
 | **Blocked on** | Nothing in code. **Two design items need the project owner**, both recorded rather than improvised: cover traffic (D-044) and Android Keystore (D-035, SPEC §2.6 — "an implementation shortcut would mean storing a key in a less protected location"). |
-| **Tests** | 148 Rust core + 14 end-to-end + 14 relay + 4 server-blindness = **180 Rust workspace** (1 ignored — the live-Tor test, run by hand) · **11 Android bridge** (`clients/android/jni`, run on the host) · **44 desktop frontend** · **11 Android JVM** (Custody Strip state mapping, passing in CI). Was 177 Rust / 44 frontend at the end of Phase 4. |
-| **CI** | Two new jobs, `android-bridge` and `android-app`, **both green on the first run**. `android-bridge`: fmt, clippy, the 11 host tests, `cargo audit` on its own lock file, and the four-ABI cross-compile — so the arti, openmls and SQLCipher trees **do** link for Android (D-047 confirmed, not predicted). `android-app`: the 11 Custody Strip JVM tests, lint, `assembleDebug`, and a check on the *merged* manifest showing INTERNET and nothing else. Everything else was verified locally on Windows: fmt, clippy `-D warnings`, the full workspace suite, both guardrail scripts, the desktop crate's `cargo check --all-targets --locked`, and the JNI crate's own `--locked` test run. What CI does **not** show is anything executing on a device — see the Phase 5 section. |
-| **Version** | `0.1.4`. Marks **Phase 5 in progress**, not Phase 5 complete. Six files now move together — see `docs/CONTEXT.md`, whose explanation of *why* was wrong until this session. |
+| **Tests** | 149 Rust core + 14 end-to-end + 14 relay + 4 server-blindness = **181 Rust workspace** (1 ignored — the live-Tor test, run by hand) · **11 Android bridge** (`clients/android/jni`, run on the host) · **44 desktop frontend** · **11 Android JVM** (Custody Strip state mapping, passing in CI). Was 180 Rust at the end of Phase 5's foundation. |
+| **CI** | Two Android jobs, `android-bridge` and `android-app`, **both green on the first run**. `android-bridge`: fmt, clippy, the 11 host tests, `cargo audit` on its own lock file, and the four-ABI cross-compile — so the arti, openmls and SQLCipher trees **do** link for Android (D-047 confirmed, not predicted). `android-app`: the 11 Custody Strip JVM tests, lint, `assembleDebug`, and a check on the *merged* manifest showing INTERNET and nothing else. A third workflow, `release.yml`, builds Windows artifacts from a `v*` tag. What CI does **not** show is anything executing on an Android device — see the Phase 5 section. |
+| **Version** | `0.1.5`. Six files move together. `SPEC_PHASE` deliberately stays at `4`: Phase 5 is not closed, and moving it would be the over-claiming its own comment warns about. |
 
 ### Owed to the project owner
 
@@ -1038,6 +1038,125 @@ Read this before believing anything above implies a working Android app.
 5. An APK on a real device — the actual exit criterion.
 
 ---
+
+## Packaging — a Windows build two people can actually use · 2026-08-09
+
+Out of SPEC's phase order, and deliberately. SPEC's Phase 6 is multi-device and
+groups, which it calls a stretch goal to attempt only once 0–5 are solid. This
+is not that. It is the packaging work that turns a repository into something a
+second person can run, requested by the project owner so the system can be
+tested by two people rather than described to them.
+
+Taken before finishing Phase 5 for a reason worth recording: Phase 5's exit
+criterion is an APK on a physical device, which **no amount of code written
+here can satisfy** — there is no device, no emulator, no SDK. The remaining
+Phase 5 work is eight Compose screens that would compile and never run. A
+Windows build, by contrast, executes. Given a choice between more unverifiable
+code and a smaller amount of code that two people can put under real use, the
+second is worth more, and Prime Directive 4 says ship narrow and working.
+
+### The defect this exposed
+
+`clients/desktop/src-tauri/src/state.rs` had the relay address compiled in:
+
+```rust
+RelayConfig::insecure_local("http://127.0.0.1:8443")
+```
+
+On a development machine that is correct and invisible, because the relay is on
+that machine. In an installer handed to somebody else it means the client can
+only ever reach a relay running on their own laptop — so two people cannot
+exchange anything at all. The repository has said "self-hostable relay" since
+Phase 0. It was true of the architecture and false of every artifact anyone
+could install, and nothing caught it because no artifact had ever been
+installed.
+
+`RelayConfig::from_env` (D-049) now reads `POUCH_RELAY` and `POUCH_RELAY_PIN`,
+and both clients call it.
+
+**The first version of this fix was itself wrong** and is worth writing down.
+It invented `POUCH_RELAY_URL` and `POUCH_RELAY_SPKI_PIN` in the core while
+leaving the CLI's existing `POUCH_RELAY` reader in place — two names for one
+setting, two hand-maintained readers, which is precisely the drift D-046 was
+written about one phase earlier. The failure mode is a user who reads the guide,
+sets the documented variable, and watches one of the two clients ignore it.
+Collapsed onto the CLI's existing names, CLI reader deleted, one definition.
+
+### What is now shipped
+
+`.github/workflows/release.yml`, triggered by a `v*` tag:
+
+| Artifact | What it is |
+|---|---|
+| `Pouch-setup.exe` | NSIS installer |
+| `Pouch.msi` | Same client for `msiexec` |
+| `pouch-relay.exe` | The relay |
+| `pouch-cli.exe` | Headless client |
+| `SHA256SUMS.txt` | Hashes for all four |
+
+Each artifact is confirmed to exist by `stat` before the release publishes.
+`tauri build` exiting 0 is not the same as an installer existing, and a release
+with missing assets looks *finished* where a failed build looks failed — the
+D-024 pattern, same as the Android ABI check.
+
+**Built and verified locally, not just in YAML.** `npx tauri build` on this
+machine produced `Pouch_0.1.4_x64-setup.exe` at 7.8 MB, an 11.6 MB MSI, and a
+31 MB standalone executable. The workflow is a transcription of a build that
+ran, which is a materially different claim from a workflow that has never been
+executed.
+
+**Unsigned** (D-050). No Authenticode certificate exists for a student project,
+so SmartScreen will report an unknown publisher and is right to. Both the
+release body and the test guide say so and give a `Get-FileHash` check against
+the published sums — which establishes the file is the one the build produced,
+and is explicitly described as *not* establishing that the software is safe.
+Marked `prerelease: true` and it stays that way while exit criteria are unmet.
+
+### A second false claim corrected
+
+`docs/CONTEXT.md` has said since Phase 1 that the Tauri crate cannot be compiled
+in this environment, for want of GTK and WebKitGTK. That is a **Linux**
+dependency. On Windows Tauri uses WebView2, which is present. `cargo check
+--locked --release` completes in about a minute and the full bundle builds.
+
+Every desktop change since Phase 1 was therefore pushed to CI to find out
+whether it compiled, when the answer was available locally in a minute. Nothing
+shipped broken because of it — the CI job caught what it needed to — but the
+cost was a round trip per change for four phases. Corrected in `CONTEXT.md`.
+
+### How two people connect, and why it is Tor
+
+`pouch-relay` serves plain HTTP — `axum::serve`, no TLS acceptor. A client
+refuses a non-loopback relay without a pinned key (D-017), and there is nothing
+to pin without a reverse proxy terminating TLS in front of it. So:
+
+- **Relay host** runs `pouch-relay.exe` with `POUCH_RELAY_TOR_STATE` set, which
+  publishes the Phase 4 onion service, and runs their own client on the default
+  loopback address.
+- **The other person** sets `POUCH_RELAY_TOR_ONION` and chooses Tor on the
+  Transport screen.
+
+No certificate, no domain, no port forwarding, no cloud host. This is the first
+time the Phase 4 onion service has had a user-facing purpose rather than being
+a transport option; it turns out to be the thing that makes peer-to-peer
+testing possible at all.
+
+`docs/TESTING_WITH_A_FRIEND.md` is the walkthrough, including a failure table
+and an explicit statement of what the test does and does not demonstrate.
+
+### Not done
+
+- **Never run end to end by two people.** The build exists and the path is
+  documented; nobody has yet completed step 1 through step 7. Until someone
+  does, this is a plausible procedure, not a verified one.
+- **No macOS or Linux build.** The workflow is `windows-latest` only, because
+  that is what was asked for. Adding the other two is mostly a matrix entry,
+  but each needs its own artifact-naming and neither has been tried.
+- **The relay has no TLS of its own**, so the direct remote route stays
+  unavailable without a proxy. Worth building if the onion route proves too
+  slow in practice.
+- **No auto-update.** Tauri supports it and it needs a signing key and a
+  hosted manifest; both are the project owner's to hold.
 
 ## Building and running on Windows · verified 2026-08-01
 

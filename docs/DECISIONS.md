@@ -1703,3 +1703,85 @@ dereferences a raw pointer — because the `jni` 0.21 entry-point signatures tak
 A guardrail enforces the part that matters: `scripts/check-guardrails.sh` check
 6 counts `#[no_mangle]` exports against `catch_unwind` wrappers and fails if a
 new entry point arrives without panic containment.
+
+---
+
+## D-049 — The relay address is deployment configuration, read once, in the core
+
+**Date:** 2026-08-09
+**Status:** accepted
+**Phase:** 6 (packaging)
+
+The desktop client had `RelayConfig::insecure_local("http://127.0.0.1:8443")`
+compiled into `state.rs`. On the developer's machine that is correct and
+invisible. In an installer handed to somebody else it means the client can only
+ever reach a relay on the machine it is running on, so two people cannot use it
+at all. "Self-hostable relay" was true of the architecture and false of every
+artifact anyone could install.
+
+`RelayConfig::from_env(default)` now reads `POUCH_RELAY` and `POUCH_RELAY_PIN`,
+and both clients call it.
+
+**The variable names are the CLI's existing ones, deliberately.** The CLI has
+honoured `POUCH_RELAY` since Phase 1 with its own hand-written reader in
+`config.rs`. The first version of this change invented `POUCH_RELAY_URL` and
+`POUCH_RELAY_SPKI_PIN` in the core and left the CLI's copy alone — two readers
+of the same setting under two names, which is exactly what D-046 was written
+about. The failure mode is concrete: a user reads the guide, sets the documented
+variable, and one of the two clients ignores it. The CLI's reader was deleted
+and it calls the core.
+
+**Deployment configuration, not a user preference.** It is not on a settings
+screen and nothing the UI can write reaches it. This is the same boundary
+`TorRelayConfig::from_env` already draws: a client that can be pointed at an
+arbitrary relay from its own interface is a client that can be *talked into*
+being pointed there. Aiming a client at a hostile relay does not expose message
+content — the relay never holds a key, and the server-blindness test asserts it
+— but it hands that operator the inbox identifiers and connection timing
+`THREAT_MODEL.md` §5 lists as visible, and it silently breaks delivery.
+
+**Fails closed, unchanged.** D-017 refuses a non-loopback address with no pin.
+Setting `POUCH_RELAY` alone to a remote host is therefore an error rather than a
+silent downgrade to unpinned TLS.
+
+**What this exposed:** `pouch-relay` serves plain HTTP — `axum::serve`, no TLS
+acceptor. So the pinned direct route requires a reverse proxy terminating TLS in
+front of it, and for two people on separate machines the practical route is the
+Phase 4 onion service, which needs no certificate, no domain and no port
+forwarding. `TESTING_WITH_A_FRIEND.md` documents that route and says why the
+other one is not offered as the easy path.
+
+---
+
+## D-050 — Windows releases are unsigned, and say so
+
+**Date:** 2026-08-09
+**Status:** accepted
+**Phase:** 6 (packaging)
+
+`.github/workflows/release.yml` builds on a `v*` tag and publishes the NSIS
+installer, the MSI, the relay and the CLI.
+
+**No code signing.** An Authenticode certificate costs money and belongs to a
+legal identity; there is neither for a student project. The consequence is real
+and is not hidden: SmartScreen tells the user the publisher is unknown, and it
+is correct to. Both the release body and the test guide state it and give a
+`Get-FileHash` command against a published `SHA256SUMS.txt` — a check that
+actually establishes the file is the one the build produced, unlike clicking
+through a warning. The hash is explicitly described as proving the file is
+unmodified and **not** that the software is safe.
+
+**Marked `prerelease: true`,** and it stays that way while the exit criteria in
+`PROGRESS.md` are unmet. Publishing unaudited software as a stable release is
+the kind of implied claim SPEC §2.5 exists to prevent.
+
+**Artifacts are confirmed by `stat`, not by exit code.** `tauri build`
+returning 0 is not the same as an installer existing. This is D-024's pattern
+and the same check the Android ABI step makes: a release whose assets are
+missing looks *finished*, where a failed build looks failed.
+
+**The release gate is smaller than CI's, on purpose.** It runs `cargo test
+--workspace` and not the full matrix. The whole suite already ran on the commit
+the tag points at; re-running it proves nothing new about the artifact. What is
+worth re-running is the core suite on Windows, because the release job is the
+only one that builds it for that target.

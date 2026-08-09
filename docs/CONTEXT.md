@@ -339,9 +339,14 @@ Each of these cost real debugging time. They are in `docs/DECISIONS.md` in full.
 
 Worth knowing before spending time on it:
 
-- **The Tauri crate does not compile here** — no GTK or WebKitGTK. Write it,
-  push it, and read the `Tauri shell — build` CI job. Assumptions it depends on
-  should be asserted in `core`, which builds everywhere.
+- **The Tauri crate does compile here** — this line previously said it did not,
+  which was wrong, and wrong in the expensive direction: it sent every desktop
+  change through a CI round trip that was never necessary. The GTK and
+  WebKitGTK dependency is a *Linux* one; on Windows Tauri uses WebView2, which
+  is present. `cargo check --locked --release` in
+  `clients/desktop/src-tauri` succeeds in about a minute, and `npx tauri build`
+  produces a real installer. The `Tauri shell — build` CI job is still the one
+  that proves the Linux build, which this machine genuinely cannot do.
 - **Branch deletion is blocked** — the git proxy returns 403 on a delete
   refspec. Pushes work; deletes do not.
 - **The GUI cannot be run**, so the frontend's honesty rules are tested through
