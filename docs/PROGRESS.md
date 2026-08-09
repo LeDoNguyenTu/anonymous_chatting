@@ -13,12 +13,12 @@ Do not begin a phase before the previous phase meets its exit criteria.
 | | |
 |---|---|
 | **Phase complete** | 0 · 1 · 2 · 3 · 4, all **fully**. Phase 4's exit criteria were verified against the live Tor network, not asserted. Merged to `develop` by the project owner via PR #3 (`c2f3197`). |
-| **Phase in progress** | 5 — Android client. **Does not meet its exit criteria and cannot from this environment**, whatever else is written: the criterion is an APK running on a physical device exchanging messages with the desktop client, and there is no device, no emulator and no signing key here. Foundation built and verified as far as compilation reaches; every SPEC §6.7 screen except the conversation list is unwritten. Alongside it, **packaging work landed out of phase order** — a distributable Windows build, because that unblocks two people actually using this and blind Compose screens do not. See both sections below. |
+| **Phase in progress** | 5 — Android client. **Does not meet its exit criteria and cannot from this environment**: the criterion is an APK running on a physical device exchanging messages with the desktop client, and there is no device, no emulator and no signing key here. What now exists is nine of the twelve SPEC §6.7 screens, all compiling and lint-clean in CI — attachment preview, backup, and wipe are absent, and the settings screen says so on its face. Alongside it, **packaging work landed out of phase order**: the relay ships inside the Windows installer (D-052) and the Android relay address is settable from the app (D-051), because without either, two people cannot use this at all. See both sections below. |
 | **Branches** | `main` and `develop`, both pushed; `main` intentionally behind `develop`. `phase-5-android` holds the Phase 5 work, pushed to origin, **not merged**. No worktree this time — the Phase 4 worktree at `.worktrees/phase-4-tor/` is merged and can be removed. |
 | **Blocked on** | Nothing in code. **Two design items need the project owner**, both recorded rather than improvised: cover traffic (D-044) and Android Keystore (D-035, SPEC §2.6 — "an implementation shortcut would mean storing a key in a less protected location"). |
-| **Tests** | 149 Rust core + 14 end-to-end + 14 relay + 4 server-blindness = **181 Rust workspace** (1 ignored — the live-Tor test, run by hand) · **11 Android bridge** (`clients/android/jni`, run on the host) · **44 desktop frontend** · **11 Android JVM** (Custody Strip state mapping, passing in CI). Was 180 Rust at the end of Phase 5's foundation. |
-| **CI** | Two Android jobs, `android-bridge` and `android-app`, **both green on the first run**. `android-bridge`: fmt, clippy, the 11 host tests, `cargo audit` on its own lock file, and the four-ABI cross-compile — so the arti, openmls and SQLCipher trees **do** link for Android (D-047 confirmed, not predicted). `android-app`: the 11 Custody Strip JVM tests, lint, `assembleDebug`, and a check on the *merged* manifest showing INTERNET and nothing else. A third workflow, `release.yml`, built and published **v0.1.5** from a `v*` tag — five assets, checksums, marked prerelease. What CI does **not** show is anything executing on an Android device, or two people using the desktop build. |
-| **Version** | `0.1.5`. Six files move together. `SPEC_PHASE` deliberately stays at `4`: Phase 5 is not closed, and moving it would be the over-claiming its own comment warns about. |
+| **Tests** | 149 Rust core + 14 end-to-end + 14 relay + 4 server-blindness = **181 Rust workspace** (1 ignored — the live-Tor test, run by hand) · **14 Android bridge** (`clients/android/jni`, run on the host; was 11, plus three for the onion-address rule) · **52 desktop frontend** (was 44, plus eight for the Hosting screen) · **16 Android JVM** (11 Custody Strip + 5 relay-address validation). |
+| **CI** | Seven jobs green on `phase-5-android`. `android-bridge` cross-compiles all four ABIs; `android-app` runs the JVM tests, lint, `assembleDebug`, and the merged-manifest check. `release.yml` published **v0.1.5**; **v0.1.6 is tagged and its Android job failed at `Build the APK and the AAB`** — see the packaging section. What CI does **not** show is anything executing on an Android device, or two people using the desktop build. |
+| **Version** | `0.1.6`, tagged. Six files plus three lock files move together. `SPEC_PHASE` deliberately stays at `4`: Phase 5 is not closed — its exit criterion is an APK running on a physical device, and nothing here has run on one. |
 
 ### Owed to the project owner
 
@@ -997,20 +997,23 @@ Read this before believing anything above implies a working Android app.
 - **The merged manifest was checked, not just the source one.** It requests
   INTERNET and nothing else, which is the only way to know a library did not
   contribute a permission during manifest merge.
-- **No APK exists.** No device, no emulator, no signing key. The release build
-  is deliberately unsigned: a release keystore is the project owner's to hold,
-  and generating one in CI would put the app's identity somewhere it does not
-  belong.
-- **Most screens are not written.** Conversation view, add contact, safety
-  number, privacy and storage, security details, transport settings, backup and
-  restore, and the identity-change modal — the desktop client has all of them,
-  this one has none. The app says so on its own empty state rather than
-  presenting a shell that looks finished.
+- **Nine of the twelve screens are now written**, which was not true when the
+  bullets above were drafted: conversation view, add contact, safety number,
+  identity-change modal, privacy and storage, transport, security details, and a
+  relay-address screen the desktop client has no equivalent of. **Absent:**
+  attachment preview, backup export and import, and wipe. The settings screen
+  names those three as missing rather than omitting them silently — a phone build
+  that looked complete would lose someone their data the first time they assumed
+  backup was there.
+- **No installable APK exists yet.** The v0.1.6 release job reached
+  `Build the APK and the AAB` and failed there; the cause has not been read at
+  the time of writing because GitHub gates logs until every job in the run
+  finishes. Signing wiring is in place — four values from either
+  `keystore.properties` or CI secrets — but no keystore exists, so an unsigned
+  artifact is the best this can produce until the owner creates one.
 - **The Custody Strip copy is duplicated** from `CustodyStrip.tsx`. That is the
   same drift D-046 just removed from the view shapes, and the same fix applies:
-  move it onto the core types the way `Route::explanation` already is. Not done
-  here because it means changing the desktop rendering path in the same commit
-  as a new client's first screens.
+  move it onto the core types the way `Route::explanation` already is.
 
 ### Open, and needing the project owner
 
@@ -1029,13 +1032,14 @@ Read this before believing anything above implies a working Android app.
 
 ### Next, in order
 
-1. Read the `android-bridge` and `android-app` CI results and fix what they
-   find. Nothing else should start first — everything above rests on code that
-   has never been compiled for its target.
-2. Decide the Keystore question (1 above).
-3. Build the remaining SPEC §6.7 screens for Android.
-4. Move the Custody Strip copy into the core, for both clients.
-5. An APK on a real device — the actual exit criterion.
+1. **Read the v0.1.6 Android job failure and fix it.** Nothing else matters
+   until a tagged release actually produces an APK.
+2. Generate a release keystore (owner) and add the four CI secrets, so the APK
+   is installable rather than unsigned.
+3. Decide the Keystore question (1 above).
+4. The three missing screens: attachment preview, backup, wipe.
+5. Move the Custody Strip copy into the core, for both clients.
+6. An APK on a real device — the actual exit criterion.
 
 ---
 
