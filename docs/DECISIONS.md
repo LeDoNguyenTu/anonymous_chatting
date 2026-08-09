@@ -1961,3 +1961,89 @@ Directive 4.
 
 The app has run on a device, crash reports are collected somewhere with a
 mapping file, and someone can state what the reduction actually buys.
+
+---
+
+## D-054 — OpenSSL is compiled into every binary, not linked from the host
+
+**Date:** 2026-08-10
+**Status:** accepted
+**Supersedes:** nothing. Extends D-047 from Android to every target.
+
+### Context
+
+v0.1.7 shipped and did not start. The first person to run the installer got:
+
+> The code execution cannot proceed because libcrypto-3-x64.dll was not found.
+
+Every step of that release passed. The build was green, all four artifacts
+existed, the checksums matched, and the relay was confirmed present inside the
+MSI. What nobody checked was what the binaries linked against at runtime.
+
+`rusqlite`'s `bundled-sqlcipher` feature — which the workspace selected —
+compiles SQLCipher from source but links OpenSSL **dynamically**. So each
+binary imported whatever `libcrypto` the build machine happened to have. The CI
+runner has OpenSSL installed, so the build succeeded and the test suite passed.
+A clean Windows install does not, so the artifact could not start.
+
+The developer machine made this harder to see rather than easier: it has
+`OPENSSL_DIR` exported globally *and* carries `libcrypto-4-x64.dll` in
+System32 — a different major version than the runner produced. A local build
+therefore worked, and worked against a different DLL than the one the release
+demanded.
+
+Android was never affected. Its crate already used
+`bundled-sqlcipher-vendored-openssl`, because there is no host OpenSSL for an
+Android target and the link failed outright. D-047 recorded that. The lesson
+was applied only to the target that forced it, and the note under that decision
+said in as many words that the plain feature "links the *host's* OpenSSL". It
+described this bug a phase before it shipped.
+
+### Decision
+
+The workspace selects `bundled-sqlcipher-vendored-openssl` for every target.
+OpenSSL is compiled from source and statically linked into each binary.
+
+Three things follow, and each is load-bearing:
+
+1. **The release workflow's "Locate OpenSSL" step is deleted.** It searched the
+   runner for headers and an import library and exported `OPENSSL_DIR`.
+   `openssl-sys` prefers a located copy over vendoring, so leaving that step in
+   place would silently undo this fix and rebuild the same broken artifact. The
+   variables are now cleared rather than merely left unset.
+
+2. **A new step reads the import table of every built `.exe` and fails if an
+   OpenSSL DLL appears in it.** Verifying the configuration is what the feature
+   flag does; verifying the artifact is what would have caught v0.1.7. The scan
+   uses `strings` rather than `dumpbin`, which needs a Visual Studio developer
+   shell this job does not enter — and a check that passes by failing to run is
+   not a check.
+
+3. **The Android crate keeps its target-scoped copy of the feature.** Redundant
+   today. Kept because the requirement it encodes is not a preference the
+   workspace happens to share: an Android build *cannot* link a host OpenSSL,
+   whatever the root chooses next.
+
+### Consequences
+
+Build time goes up — OpenSSL is compiled once per target. `perl` becomes a real
+build prerequisite, and a full distribution rather than a minimal one:
+`Configure` needs `Locale::Maketext::Simple` and `IPC::Cmd`, which Git Bash's
+bundled perl does not carry. `nasm` is **not** required; `openssl-src` passes
+`no-asm`. All three lock files gained `openssl-src v300.6.1+3.6.3`.
+
+Not a cryptographic change. Same SQLCipher, same AES-256, sourced differently.
+
+The wider consequence is a process one. Prime Directive 3 says the UI must never
+show a reassuring indicator when the underlying state is uncertain, and a green
+release badge is an indicator. This release was green and the software did not
+run. Every check that passed was a check of something the build controlled;
+none of them was a check of the thing a user actually executes.
+
+### Revisit when
+
+Never for the feature choice — a distributed binary cannot depend on a library
+the target machine has no reason to carry. The import scan is worth revisiting
+only to make it stricter: it currently names OpenSSL specifically, where the
+honest requirement is that no shipped binary imports any DLL outside the
+Windows system set.

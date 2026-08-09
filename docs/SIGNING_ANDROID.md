@@ -139,8 +139,10 @@ cannot be undone.
 Two things about this app that a Play listing has to be honest about:
 
 - It is unaudited student software. The listing should not imply otherwise, and
-  the same rule that governs this repository governs the store description: no
-  claim of unbreakable, uncrackable, military-grade, or better-than-Signal.
+  the same rule that governs this repository governs the store description: none
+  of the claims SPEC §2.4 forbids, and no comparison that places this alongside
+  a reviewed messenger. The guardrail in `scripts/check-guardrails.sh` enforces
+  that list here; nothing enforces it on a store page except you.
 - Messages depend on someone running a relay. If nobody hosts, nothing is
   delivered. A store listing that omits this is describing software the user is
   not getting.

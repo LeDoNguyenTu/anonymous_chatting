@@ -1,7 +1,7 @@
 [package]
 name = "pouch-jni"
 description = "Pouch Android bridge. Exposes pouch-core to Kotlin across JNI."
-version = "0.1.7"
+version = "0.1.8"
 edition = "2021"
 rust-version = "1.89"
 license = "AGPL-3.0-or-later"
@@ -75,22 +75,24 @@ missing_docs = "warn"
 
 # Cross-compiling SQLCipher for Android.
 #
-# `rusqlite`'s `bundled-sqlcipher` feature — which the workspace selects, and
-# which reaches this crate through pouch-core — compiles SQLCipher from source
-# but links the *host's* OpenSSL for its crypto. There is no host OpenSSL for
-# an Android target, so that configuration fails at link time on exactly the
-# builds this crate exists to produce.
+# `rusqlite`'s plain `bundled-sqlcipher` feature compiles SQLCipher from source
+# but links the *host's* OpenSSL for its crypto. There is no host OpenSSL for an
+# Android target, so that configuration fails at link time on exactly the builds
+# this crate exists to produce.
 #
 # `bundled-sqlcipher-vendored-openssl` builds OpenSSL from source too, for
 # whichever target is being compiled.
 #
-# Scoped to Android rather than named as an ordinary dependency, because Cargo
-# features are additive: unconditionally it would also apply when this crate is
-# built and tested on a developer's machine, where compiling OpenSSL from
-# source is unnecessary and adds build-time prerequisites (perl, nasm) that
-# nothing else in this project needs. `resolver = "2"` above is what makes the
-# scoping real — under the v1 resolver, target-specific features leak into
-# every target.
+# Redundant since D-054 — the root workspace now selects the vendored feature
+# for every target, having shipped a Windows release that imported a
+# `libcrypto` DLL absent on the machines it was installed on. Kept anyway, and
+# kept target-scoped, because the requirement it encodes is not a preference
+# that the workspace happens to share: an Android build *cannot* link a host
+# OpenSSL, whatever the workspace chooses next. If the root is ever reverted,
+# this keeps the Android build correct instead of failing in CI.
+#
+# `resolver = "2"` above is what makes the scoping real — under the v1
+# resolver, target-specific features leak into every target.
 #
 # Not a cryptographic change: the same SQLCipher, the same AES-256, sourced
 # differently. A build-configuration decision, recorded as D-047.

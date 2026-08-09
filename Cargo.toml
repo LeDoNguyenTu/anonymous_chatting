@@ -6,7 +6,7 @@ members = ["core", "server", "clients/cli"]
 exclude = ["clients/desktop/src-tauri"]
 
 [workspace.package]
-version = "0.1.7"
+version = "0.1.8"
 edition = "2021"
 rust-version = "1.89"
 license = "AGPL-3.0-or-later"
@@ -54,7 +54,29 @@ zeroize = { version = "=1.8.1", features = ["zeroize_derive"] }
 # `bundled-sqlcipher` is confirmed still present at 0.39.0. This forces the
 # thiserror and serde bumps below via arti-client's own transitive tree, and
 # requires three `as i64` casts in server/src/store.rs — see D-040 for why.
-rusqlite = { version = "=0.39.0", features = ["bundled-sqlcipher"] }
+#
+# `-vendored-openssl` since D-054, and the reason is a shipped bug rather than
+# a preference. Plain `bundled-sqlcipher` compiles SQLCipher from source but
+# links the *host's* OpenSSL, so every Windows binary in v0.1.7 imported
+# `libcrypto-3-x64.dll`. That DLL exists on the CI runner and on a developer
+# machine; it does not exist on a clean Windows install, where the app died
+# before its first window with "The code execution cannot proceed because
+# libcrypto-3-x64.dll was not found". An installer that carries the relay and
+# still cannot start is not standalone.
+#
+# D-047 made exactly this change for Android and stated exactly this reason.
+# The lesson was applied to the target that failed at *link* time and not to
+# the one that failed at *run* time, on a machine nobody had tested.
+#
+# Vendoring means one statically-linked OpenSSL per binary, built from source.
+# It costs build time and requires perl on the build host — a full distribution,
+# not a minimal one: OpenSSL's Configure needs Locale::Maketext::Simple and
+# IPC::Cmd, which Git Bash's bundled perl does not carry. nasm is *not* needed;
+# openssl-src passes `no-asm`. Not a cryptographic change: same SQLCipher, same
+# AES-256, sourced differently.
+rusqlite = { version = "=0.39.0", features = [
+    "bundled-sqlcipher-vendored-openssl",
+] }
 
 # --- transport / server ---------------------------------------------------
 axum = "=0.7.9"

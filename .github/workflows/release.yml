@@ -216,65 +216,46 @@ jobs:
           cache: npm
           cache-dependency-path: clients/desktop/package-lock.json
 
-      # SQLCipher is OpenSSL-backed, so `libsqlite3-sys`'s build script needs
-      # OpenSSL and panics without it. On Linux the system copy is found
-      # automatically; on Windows nothing points at one.
+      # OpenSSL is compiled from source into every binary, so nothing here
+      # points at a system copy. That is the whole fix in D-054, and this step
+      # exists to keep it that way.
       #
-      # Worth stating plainly because it caught the first release attempt: the
-      # same build succeeds on the developer's Windows machine and failed here,
-      # purely because that machine has OPENSSL_DIR exported globally. A local
-      # success that depends on an unexported environment variable is not
-      # evidence the build is self-contained.
+      # This used to be "Locate OpenSSL for SQLCipher", which searched the
+      # runner for headers and a `libcrypto.lib` and exported OPENSSL_DIR. It
+      # worked, and it produced v0.1.7: three Windows binaries that each
+      # imported `libcrypto-3-x64.dll`, a DLL present on this runner and absent
+      # on a clean Windows install. The first person to run the installer got
+      # "The code execution cannot proceed because libcrypto-3-x64.dll was not
+      # found" before the app drew a window.
       #
-      # Both the root *and* the import library are located, because setting
-      # OPENSSL_DIR alone got the build script past its check and then failed at
-      # link time with `cannot open input file 'libcrypto.lib'` — the Windows
-      # installers nest the .lib under lib/VC/x64/MD rather than lib/, and which
-      # layout you get depends on who built the installer. Searching for the
-      # file is the only thing that survives that.
-      - name: Locate OpenSSL for SQLCipher
+      # Setting OPENSSL_DIR now would be actively harmful: openssl-sys prefers a
+      # located copy over vendoring, so leaving that step in place would quietly
+      # undo the fix and reproduce the same broken artifact. The variables are
+      # therefore cleared rather than merely left unset, in case a runner image
+      # ever exports one.
+      #
+      # perl is a real build prerequisite — OpenSSL's Configure is a perl
+      # script, and it needs a full distribution, not a minimal one. Checked up
+      # front so a missing interpreter fails in two seconds with a clear reason
+      # rather than fifteen minutes in with a stack of perl module errors.
+      # nasm is *not* required: openssl-src passes `no-asm`.
+      - name: Confirm the vendored OpenSSL build can run
         shell: bash
         run: |
           set -eu
-
-          root=""
-          for candidate in \
-            "/c/Program Files/OpenSSL" \
-            "/c/Program Files/OpenSSL-Win64" \
-            "${VCPKG_INSTALLATION_ROOT:+$(cygpath -u "${VCPKG_INSTALLATION_ROOT}")/installed/x64-windows}" \
-            "/c/Strawberry/c"; do
-            if [ -n "$candidate" ] && [ -d "$candidate/include/openssl" ]; then
-              root="$candidate"
-              break
-            fi
+          for v in OPENSSL_DIR OPENSSL_LIB_DIR OPENSSL_INCLUDE_DIR OPENSSL_NO_VENDOR; do
+            echo "$v=" >> "$GITHUB_ENV"
           done
 
-          if [ -z "$root" ]; then
-            echo "No OpenSSL include directory found."
-            echo "openssl on PATH: $(command -v openssl 2>/dev/null || echo none)"
-            echo "VCPKG_INSTALLATION_ROOT: ${VCPKG_INSTALLATION_ROOT:-unset}"
-            ls "/c/Program Files" 2>/dev/null | grep -i ssl || echo "nothing matching ssl"
+          if ! command -v perl >/dev/null; then
+            echo "perl not found. OpenSSL cannot be built from source without it."
             exit 1
           fi
-
-          # The import library, wherever this installer decided to put it.
-          lib=$(find "$root" -name 'libcrypto.lib' -type f 2>/dev/null | head -1)
-          if [ -z "$lib" ]; then
-            echo "Found OpenSSL headers at $root but no libcrypto.lib beneath it."
-            echo "Contents of $root/lib:"
-            ls -R "$root/lib" 2>/dev/null | head -40
+          perl -e 'use Locale::Maketext::Simple; use IPC::Cmd; print "perl: ", $^V, " with the modules Configure needs\n"' || {
+            echo "perl is present but missing modules OpenSSL's Configure requires."
+            echo "perl in use: $(command -v perl)"
             exit 1
-          fi
-          libdir=$(dirname "$lib")
-
-          {
-            echo "OPENSSL_DIR=$(cygpath -w "$root")"
-            echo "OPENSSL_LIB_DIR=$(cygpath -w "$libdir")"
-            echo "OPENSSL_INCLUDE_DIR=$(cygpath -w "$root/include")"
-          } >> "$GITHUB_ENV"
-
-          echo "OpenSSL root:    $root"
-          echo "libcrypto.lib:   $lib"
+          }
 
       # The tests that gate a release are the ones that can run here. This is a
       # deliberately smaller gate than CI: the full suite already ran on the
@@ -340,6 +321,41 @@ jobs:
           copy_or_fail "target/release/pouch-cli.exe"   "pouch-cli.exe"
 
           exit "$missing"
+
+      # The check that would have caught v0.1.7 before anyone downloaded it.
+      #
+      # Every step in that release passed. The build was green, the artifacts
+      # existed, the checksums matched, and all three .exe files imported
+      # `libcrypto-3-x64.dll` — a DLL this runner happens to have and a clean
+      # Windows install does not. The first person to run the installer got a
+      # loader error before the app drew a window.
+      #
+      # Verifying the *configuration* is what the vendored feature does; this
+      # verifies the *artifact*, because the two disagreed for a whole release
+      # and only the artifact is what a user runs. D-024's pattern again: check
+      # that the thing did what it was configured to do.
+      #
+      # The script parses the PE import directory itself rather than shelling
+      # out. `dumpbin` needs a Visual Studio developer shell this job does not
+      # enter, and `strings` is not on a stock Windows runner — the first draft
+      # of this step used it and died with "strings: command not found", which
+      # is precisely the failure mode the check exists to prevent. A check that
+      # passes by failing to run is not a check.
+      #
+      # It tests against a permitted set of system DLLs rather than a list of
+      # known-bad names, because `libcrypto` was not on anyone's list of things
+      # to watch for either.
+      - name: Confirm no binary depends on a DLL the target may not have
+        shell: bash
+        run: |
+          set -eu
+          # The installers carry the client compressed, so scanning them proves
+          # nothing either way. The client executable in the build tree is what
+          # they package, so that is what gets checked.
+          python scripts/check-no-openssl-dll.py \
+            dist/pouch-relay.exe \
+            dist/pouch-cli.exe \
+            clients/desktop/src-tauri/target/release/pouch-desktop.exe
 
       # Before the release is published, not after. The checksums are the only
       # thing a user can verify against, so a release must never exist — even

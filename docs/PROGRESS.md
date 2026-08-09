@@ -17,8 +17,8 @@ Do not begin a phase before the previous phase meets its exit criteria.
 | **Branches** | `main` and `develop`, both pushed; `main` intentionally behind `develop`. `phase-5-android` holds the Phase 5 work, pushed to origin, **not merged**. No worktree this time — the Phase 4 worktree at `.worktrees/phase-4-tor/` is merged and can be removed. |
 | **Blocked on** | Nothing in code. **Two design items need the project owner**, both recorded rather than improvised: cover traffic (D-044) and Android Keystore (D-035, SPEC §2.6 — "an implementation shortcut would mean storing a key in a less protected location"). |
 | **Tests** | 149 Rust core + 14 end-to-end + 14 relay + 4 server-blindness = **181 Rust workspace** (1 ignored — the live-Tor test, run by hand) · **14 Android bridge** (`clients/android/jni`, run on the host; was 11, plus three for the onion-address rule) · **52 desktop frontend** (was 44, plus eight for the Hosting screen) · **16 Android JVM** (11 Custody Strip + 5 relay-address validation). |
-| **CI** | Seven jobs green on `phase-5-android`. `android-bridge` cross-compiles all four ABIs; `android-app` runs the JVM tests, lint, `assembleDebug`, the merged-manifest check, and a `--dry-run` of `assembleRelease bundleRelease` that resolves the release task graph without executing it. `release.yml` published **v0.1.5**, **v0.1.6 (Windows half only)**, and **v0.1.7 — the first run where both jobs passed**: installer, MSI, relay, CLI, debug APK, unsigned release APK, AAB. What CI does **not** show is anything executing on an Android device, or two people using the desktop build. |
-| **Version** | `0.1.7`. Six files plus **four** lock files move together — `package-lock.json` is one of them, and had read `0.1.3` since that release because `npm ci` enforces dependency agreement but not the root version. `SPEC_PHASE` deliberately stays at `4`: Phase 5 is not closed — its exit criterion is an APK running on a physical device, and nothing here has run on one. |
+| **CI** | Seven jobs green on `phase-5-android`. `android-bridge` cross-compiles all four ABIs; `android-app` runs the JVM tests, lint, `assembleDebug`, the merged-manifest check, and a `--dry-run` of `assembleRelease bundleRelease` that resolves the release task graph without executing it. `release.yml` published **v0.1.5**, **v0.1.6 (Windows half only)**, and **v0.1.7** — whose artifacts all built, passed every check, and **did not start on a clean Windows machine** (D-054). `release.yml` now parses each binary's PE import table and fails on a DLL the target may not have. What CI does **not** show is anything executing on an Android device, or two people using the desktop build. |
+| **Version** | `0.1.8`. Six files plus four lock files move together. `SPEC_PHASE` deliberately stays at `4`: Phase 5 is not closed — its exit criterion is an APK running on a physical device, and nothing here has run on one. |
 
 ### Owed to the project owner
 
@@ -1017,6 +1017,22 @@ Read this before believing anything above implies a working Android app.
   requesting `INTERNET` and nothing else, and every SHA-256 matching the
   published sums. `docs/SIGNING_ANDROID.md` is the remaining step, and it is the
   owner's.
+- **Every Windows binary in v0.1.7 imported a DLL that is not on a clean install,
+  and the release passed every check anyway.** `libcrypto-3-x64.dll`, because
+  `bundled-sqlcipher` compiles SQLCipher from source and then links the *build
+  machine's* OpenSSL. The runner had it, so client, relay and CLI all built,
+  hashed, and published; the app died before its first window on a machine that
+  did not. Fixed by vendoring OpenSSL for every target (D-054) and **verified by
+  parsing the rebuilt relay's import table**: the DLL is gone, the binary grew
+  12.2 MB → 16.4 MB, and only system DLLs remain. Android was never affected —
+  its crate already vendored, and D-047 stated this exact reason in writing.
+  What generalises past the fix: three green jobs, four matching checksums and a
+  local run all reported a working artifact. Only installing it found the bug.
+  `scripts/check-no-openssl-dll.py` now runs in the release job, and was tested
+  against the *published* v0.1.7 binaries to confirm it fails on them — a
+  guardrail never shown to fail is not known to work. Its first version used
+  `strings`, which does not exist on a stock runner, and would have passed
+  everything by never running at all.
 
   One thing that looked like a SPEC §2.2 violation and was not: a raw string
   scan of the manifest shows `android.permission.DUMP`. Parsing the binary XML
