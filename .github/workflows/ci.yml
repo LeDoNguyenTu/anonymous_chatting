@@ -121,6 +121,17 @@ jobs:
         run: |
           npm ci
           npm run build
+      # Before `cargo check`, not only before `tauri build`. `tauri-build` runs
+      # in build.rs and validates every declared externalBin against the *host*
+      # triple, so a missing sidecar fails compilation, not just bundling —
+      # which is how this job broke when the relay was first bundled (D-052).
+      #
+      # Running the real staging script rather than touching a placeholder file
+      # is the point: it exercises the triple-suffix logic on Linux as well as
+      # Windows, and a placeholder would let the script rot on one platform
+      # while CI stayed green.
+      - name: Stage the relay sidecar for this runner's target
+        run: ./scripts/stage-relay-sidecar.sh
       - name: Check the shell compiles
         working-directory: clients/desktop/src-tauri
         # --locked, because this crate is outside the workspace and its

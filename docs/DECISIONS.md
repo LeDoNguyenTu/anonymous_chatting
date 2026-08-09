@@ -1785,3 +1785,121 @@ missing looks *finished*, where a failed build looks failed.
 the tag points at; re-running it proves nothing new about the artifact. What is
 worth re-running is the core suite on Windows, because the release job is the
 only one that builds it for that target.
+
+---
+
+## D-051 — The relay address is settable from the Android UI
+
+**Date:** 2026-08-09
+**Status:** accepted. Supersedes the scope of D-049's "nothing the UI can write
+reaches it" for the Android client only. Desktop and CLI are unchanged.
+
+D-049 made the relay address deployment configuration, read once from the
+environment, and gave the reason plainly: a client that can be pointed at an
+arbitrary relay from its own interface is a client that can be *talked into*
+being pointed there.
+
+That boundary is free on desktop and on the CLI, where a shell exists and
+`POUCH_RELAY` can be set before launch. **Android has no shell and no per-app
+environment.** A `BuildConfig` field is the only equivalent, and it is fixed at
+compile time.
+
+So holding D-049's line on Android means one of:
+
+1. **An APK per relay.** Whoever wants to talk to a different relay rebuilds the
+   app. In practice that means one person builds it and everyone else installs
+   *their* APK — so the address and the binary both become somebody else's
+   choice, and the recipient can verify neither. That is a strictly worse
+   outcome than the one D-049 was guarding against.
+2. **A single hardcoded relay** the project operates. This is the Signal model
+   and it genuinely is better for users, but it contradicts SPEC §7 —
+   self-hostable relay, no central service — and there is no infrastructure to
+   run it on.
+3. **No Android client.**
+
+### What was decided
+
+The address is settable from the app, stored in `SharedPreferences`, and read
+once at startup like every other client reads its own source.
+
+The screen that sets it states the cost in `THREAT_MODEL.md` §5's own terms
+rather than presenting a neutral field: pointing at a hostile relay does **not**
+expose message content — the relay holds no key and the server-blindness test
+asserts it — but it does hand that operator the inbox identifiers and connection
+timing already listed as visible, and a merely *wrong* address means silent
+non-delivery.
+
+Saving restarts the app rather than re-pointing a live session. The core reads
+its relay once and holds it for the process lifetime; switching in place would
+put part of a conversation on one relay and part on another with the Custody
+Strip unable to say which. The button says it will close the app before it does.
+
+### Tor was unreachable on Android before this
+
+`SessionConfig::tor` called `TorRelayConfig::from_env`. On a phone that variable
+can never be set, so `connect_tor` returned `NoTorConfigured` unconditionally
+while the transport screen offered Tor as a choice — an option that could not be
+taken. The onion address now arrives from Kotlin alongside the direct one.
+
+A value that does not end in `.onion` is **refused**, not ignored. Accepting one
+would produce a route the app calls Tor over a connection that never entered the
+Tor network, and the Custody Strip would read `TOR`. That is a reassuring
+indicator over an untrue state, which Prime Directive 3 forbids outright. Three
+JNI tests and five Android JVM tests cover the rule.
+
+### Rejected
+
+- **Storing it encrypted.** It is an address, not a secret. Encrypting it would
+  imply it needed protecting and would put a second key beside the one that
+  actually matters.
+- **A relay picker with a curated list.** Implies the project vetted the
+  operators. It has not and cannot.
+- **Silently falling back to the build default on a bad address.** The user
+  would believe they had switched. `isConfigured` exists so the UI can tell the
+  difference between "not set" and "set to the default".
+
+---
+
+## D-052 — The relay ships inside the desktop installer as a sidecar
+
+**Date:** 2026-08-09
+**Status:** accepted
+
+Until now the two-person setup needed `pouch-relay.exe` downloaded separately
+and started from a terminal with an environment variable set. That is a real
+barrier for the people this is meant to be usable by, and it made "standalone"
+false: the client depended on somebody else having done a second install.
+
+The relay binary is now declared as a Tauri `externalBin`, staged into
+`clients/desktop/src-tauri/binaries/` by `scripts/stage-relay-sidecar.sh`, and
+bundled into both the NSIS installer and the MSI. A **Host a relay** screen
+starts it as a child process, shows the onion address once it is published, and
+stops it on exit.
+
+**Verified by extracting the built MSI**, not by trusting the build. The
+guardrail here matters more than usual: an installer that builds successfully
+while missing a component looks *finished*, where a failed build looks failed.
+`stat` on the staged binary, a size delta on the installer, and an extraction
+that put `pouch-relay.exe` beside `pouch-desktop.exe` and ran it.
+
+### What it does not do
+
+**The relay is not started automatically, and hosting is not the default.** A
+messaging app that opens a listening socket and publishes an onion service
+without being asked is doing something the user did not consent to. It is a
+button with an explanation of what running one means.
+
+**Both people still cannot be offline at once.** Whoever hosts has to be
+running for messages to move. Bundling removes the second *install*, not the
+requirement that a relay exist somewhere. The screen says so rather than
+implying the app is peer-to-peer.
+
+### Rejected
+
+- **`tauri-plugin-shell`.** It brings a general command-execution permission
+  surface to do one thing that `std::process::Command` already does. The plugin
+  is the larger attack surface for the smaller convenience.
+- **Starting the relay on launch.** Above.
+- **A Windows service.** Survives reboots, which is the right answer for a real
+  deployment and the wrong one for software a person is trying out — an
+  uninstall that leaves a service running and a socket open is a bad surprise.

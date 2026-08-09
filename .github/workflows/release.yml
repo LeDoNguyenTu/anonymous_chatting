@@ -276,15 +276,22 @@ jobs:
           npm ci
           npm run build
 
+      # Before the bundle, because `tauri-build` validates every declared
+      # externalBin against the host triple in build.rs — a missing sidecar
+      # fails compilation, not just bundling. This also produces the
+      # `pouch-relay.exe` the standalone artifact is copied from below, so the
+      # relay is built once and shipped twice: inside the installer, and beside
+      # it for anyone who wants to run it headless.
+      - name: Stage the relay sidecar
+        shell: bash
+        run: ./scripts/stage-relay-sidecar.sh
+
       # --locked, because this crate is outside the workspace and its committed
       # Cargo.lock is the only thing pinning its transitive dependencies
       # (D-029). A release is the worst possible place to re-resolve.
       - name: Build the desktop bundle
         working-directory: clients/desktop
         run: npx tauri build -- --locked
-
-      - name: Build the relay
-        run: cargo build --release --locked -p pouch-relay
 
       - name: Build the CLI
         run: cargo build --release --locked -p pouch-cli

@@ -10,6 +10,8 @@
 // Rust and forgets to re-run cargo-ndk builds an APK against a stale library.
 // `nativeLibsPresent` below fails the build rather than letting that ship.
 
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -84,9 +86,13 @@ android {
     //
     // Losing this file means Play will not accept another update of this app,
     // ever. Back it up somewhere you would not lose a passport.
-    val keystoreProperties = java.util.Properties().apply {
+    // Fully qualified from the root package. Inside an `android { }` block the
+    // bare name `java` resolves to the Java plugin extension, not the JDK
+    // package, so `java.util.Properties` is a compile error here and reads like
+    // a working line everywhere else.
+    val keystoreProperties = Properties().apply {
         val file = rootProject.file("keystore.properties")
-        if (file.exists()) file.inputStream().use { load(it) }
+        if (file.exists()) file.inputStream().use { this.load(it) }
     }
 
     signingConfigs {

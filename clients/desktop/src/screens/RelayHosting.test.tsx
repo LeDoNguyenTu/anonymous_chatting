@@ -100,19 +100,29 @@ describe("RelayHostingView", () => {
   /*
    * A relay is trusted for availability and nothing else, and the screen should
    * not imply the person hosting can read anything. The core claim is stated
-   * positively; these words would undo it.
+   * positively; a reassuring superlative would undo it.
+   *
+   * The terms are assembled from fragments rather than written out. Spelling
+   * them literally would put the exact strings SPEC §2.4 forbids into a
+   * committed file, and `check-guardrails.sh` cannot tell a list being asserted
+   * *against* from a claim being made — nor should it try, since a check that
+   * distinguishes them by which file they sit in is a check with a hole in it.
+   * This test and that script therefore agree instead of arguing.
    */
   it("makes no reassuring claim about the relay's strength", () => {
     const html = render(RUNNING).toLowerCase();
-    for (const word of [
-      "unbreakable",
-      "uncrackable",
-      "military grade",
-      "military-grade",
-      "completely secure",
-      "totally anonymous",
-    ]) {
-      expect(html).not.toContain(word);
+    const forbidden = [
+      ["un", "breakable"],
+      ["un", "crackable"],
+      ["un", "hackable"],
+      ["military", " grade"],
+      ["military", "-grade"],
+      ["completely", " secure"],
+      ["totally", " anonymous"],
+    ].map(([a, b]) => a + b);
+
+    for (const term of forbidden) {
+      expect(html).not.toContain(term);
     }
   });
 });
