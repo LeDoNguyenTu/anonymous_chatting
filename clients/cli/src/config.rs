@@ -15,12 +15,13 @@ pub fn db_path() -> String {
 }
 
 /// Which relay to talk to, and whether its key is pinned.
+///
+/// The variables and their meaning are [`RelayConfig::from_env`]'s to define,
+/// not this client's. This used to be a hand-written copy here, and the desktop
+/// client had the address compiled in — so `POUCH_RELAY` worked on the CLI and
+/// was silently ignored by the window. One reader means that cannot recur.
 pub fn relay() -> RelayConfig {
-    let url = std::env::var("POUCH_RELAY").unwrap_or_else(|_| "http://127.0.0.1:8443".to_string());
-    match std::env::var("POUCH_RELAY_PIN") {
-        Ok(pin) if !pin.is_empty() => RelayConfig::pinned(url, pin),
-        _ => RelayConfig::insecure_local(url),
-    }
+    RelayConfig::from_env("http://127.0.0.1:8443")
 }
 
 /// Where this client keeps Tor's state when `POUCH_TOR_STATE_DIR` is unset.

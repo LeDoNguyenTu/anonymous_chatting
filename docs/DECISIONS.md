@@ -1561,3 +1561,403 @@ environment at all stays the host's decision.
 **Rejected: follow the plan literally and note the gap.** A known partial
 protection, documented but shipped, is the thing this project has repeatedly
 decided not to do. The cost of the wider fix was one helper function.
+
+---
+
+## D-046 — Client view shapes live in the core, not in each client
+
+**Date:** 2026-08-09 · **Status:** accepted · **Phase:** 5
+
+Ten `Serialize` DTOs — `ConversationView`, `MessageView`, `ManifestRow`,
+`SendResult`, `RelayVisibilityView`, `SecurityDetailsView`,
+`IdentityChangeView`, `TransportOptionView`, `AttachmentView`, and the two
+backup views — were defined in `clients/desktop/src-tauri/src/commands.rs`.
+They now live in `core/src/views.rs`, and the desktop client converts to them
+rather than defining them.
+
+**Why now.** SPEC §9's Phase 5 requires the Android client to *mirror the
+desktop feature set*. Mirroring the feature set means needing the same ten
+shapes, and the obvious route — write them again in the new client — creates
+two hand-maintained copies of the same structures.
+
+**Why it matters more here than in ordinary code.** These carry security
+state. Add a field to `SecurityDetails`, pick it up in one client and miss it
+in the other, and one screen renders a blank where a mechanism should be
+named. Nothing fails. No test breaks. The screen simply under-reports what is
+protecting the user, which is precisely what SPEC §2.3 and Prime Directive 3
+exist to prevent. Drift in a colour token is cosmetic; drift here is a quiet
+false negative in the one part of the interface whose entire job is to be
+accurate about the mechanisms in use.
+
+Every string in these types still comes from the core type it projects —
+`IdentityState::label()`, `Route::name()`, `Stage::label()` — so no client can
+invent its own wording for a route, a stage, or an identity state. The types
+are projections, not a second source of truth.
+
+**One exception is stated on its face.** `ExportBackupView` carries the
+recovery key and the encrypted backup, because SPEC §7.3 puts the recovery key
+in the user's hands and nowhere else; there is no version of that feature where
+it does not cross to the UI. The type says so in its own doc comment rather
+than leaving it to be noticed.
+
+**Rejected: a separate `pouch-views` crate.** It would have been a third crate
+to version, pin, and keep in step with `core` for no isolation benefit — these
+types are projections *of* core types and cannot be built without them.
+
+**Rejected: generating the Kotlin side.** A code generator would remove the
+Kotlin/Rust duplication too, and that is a real remaining gap. It was not built
+because the generator becomes a dependency of the build with its own pins and
+failure modes, and the duplication it removes is currently ten small structs
+guarded by `ignoreUnknownKeys` and by the JNI crate's own field-presence tests.
+Worth revisiting if the view surface grows.
+
+**Found while doing this, and fixed:** `pouch_core::SPEC_PHASE` still read `2`
+after Phases 3 and 4 had both shipped. Nothing referenced it, so nothing forced
+it to move. That is how an honesty marker rots — under-claiming never breaks a
+test, so it is never noticed. Now `4`, with a note to bump it when a phase
+closes.
+
+---
+
+## D-047 — Vendored OpenSSL for the Android build only
+
+**Date:** 2026-08-09 · **Status:** accepted · **Phase:** 5
+
+`rusqlite`'s `bundled-sqlcipher` feature, which the workspace selects and which
+reaches every client through `pouch-core`, compiles SQLCipher from source but
+links the **host's** OpenSSL for its crypto. There is no host OpenSSL for an
+Android target, so that configuration cannot produce the libraries this phase
+exists to build.
+
+`clients/android/jni` therefore names
+`bundled-sqlcipher-vendored-openssl`, which builds OpenSSL from source for
+whichever target is being compiled.
+
+**This is a build-configuration decision, not a cryptographic one.** The same
+SQLCipher, the same AES-256, the same `PRAGMA cipher_version` check D-024 put
+in place. What changes is where the crypto library comes from at link time.
+
+**Scoped to Android** — `[target.'cfg(target_os = "android")'.dependencies]` —
+rather than named as an ordinary dependency. Cargo features are additive, so an
+unconditional entry would also apply when the crate is built and tested on a
+developer's machine, where compiling OpenSSL from source is unnecessary and
+adds build-time prerequisites (perl, nasm) that nothing else in this project
+needs. `resolver = "2"` in that crate's `[workspace]` table is what makes the
+scoping real: under the v1 resolver, target-specific features leak into every
+target.
+
+**Unverified at the time of writing.** No cross-compile has been run anywhere.
+This machine has no NDK, no Android Rust target, and no `cargo-ndk`. Whether
+the `arti`, `openmls` and SQLCipher trees actually link for Android is what the
+`android-bridge` CI job answers — it is the reason that job exists, and it is
+the reason it checks for four `.so` files rather than trusting an exit code.
+
+---
+
+## D-048 — One JNI entry point, not one per operation
+
+**Date:** 2026-08-09 · **Status:** accepted · **Phase:** 5
+
+The Android bridge exposes two exported functions: `nativeStart`, and
+`nativeCall(operation, argsJson) -> json`. The desktop client's equivalent
+surface is 35 separate Tauri commands.
+
+**The reason is what could be tested.** This project had no Android SDK, no
+NDK, no emulator, no device, and no JVM available while the bridge was written.
+Thirty-five hand-marshalled JNI functions would have meant thirty-five pieces of
+code that could not be executed anywhere — each one an opportunity for a
+`JString` mishandled, a local reference leaked, or a panic escaping into
+undefined behaviour, discoverable only on hardware nobody had.
+
+Collapsing the marshalling into one function makes the untestable surface
+exactly one function. Everything behind it — `session.rs`, which holds every
+operation, every argument shape, and every decision about what happens when no
+identity is open — is ordinary Rust with no `jni` types in it, and runs under
+`cargo test` on any machine. Eleven tests do.
+
+**The cost, stated plainly:** dispatch is by string, so an operation name typo
+in Kotlin is a runtime error rather than a link error. Three things blunt it.
+The match arm list is explicit and an unknown name is refused rather than
+forwarded — a bridge that forwards unrecognised requests to the core grows a
+surface nobody reviewed. The error names the operation, so the message alone is
+diagnosable without attaching a debugger to a phone. And Kotlin's `Pouch`
+object is a typed facade with one function per operation and no
+general-purpose passthrough, so screens never write an operation name at all.
+
+**Rejected: a handle-based design** returning a pointer to Kotlin as a `jlong`.
+It is the conventional JNI shape, and it hands the JVM a pointer it can outlive
+— a use-after-free waiting for a configuration change to trigger it. One
+process-wide session, guarded, mirrors what `AppState` already does on the
+desktop and cannot be dangled.
+
+**`unsafe_code` is `deny`, not `forbid`.** Every other crate in this project
+forbids it outright. A JNI entry point must be `#[no_mangle]` so the JVM can
+find it by name, and the compiler treats `#[no_mangle]` as unsafe because two
+libraries exporting one symbol is undefined at link time. `forbid` cannot be
+overridden anywhere, so it would make an FFI library impossible to write rather
+than safer. Two `#[allow(unsafe_code)]` attributes, each with a reason, on the
+two exports. There is no `unsafe` **block** anywhere in the crate — nothing
+dereferences a raw pointer — because the `jni` 0.21 entry-point signatures take
+`JNIEnv` by value.
+
+A guardrail enforces the part that matters: `scripts/check-guardrails.sh` check
+6 counts `#[no_mangle]` exports against `catch_unwind` wrappers and fails if a
+new entry point arrives without panic containment.
+
+---
+
+## D-049 — The relay address is deployment configuration, read once, in the core
+
+**Date:** 2026-08-09
+**Status:** accepted
+**Phase:** 6 (packaging)
+
+The desktop client had `RelayConfig::insecure_local("http://127.0.0.1:8443")`
+compiled into `state.rs`. On the developer's machine that is correct and
+invisible. In an installer handed to somebody else it means the client can only
+ever reach a relay on the machine it is running on, so two people cannot use it
+at all. "Self-hostable relay" was true of the architecture and false of every
+artifact anyone could install.
+
+`RelayConfig::from_env(default)` now reads `POUCH_RELAY` and `POUCH_RELAY_PIN`,
+and both clients call it.
+
+**The variable names are the CLI's existing ones, deliberately.** The CLI has
+honoured `POUCH_RELAY` since Phase 1 with its own hand-written reader in
+`config.rs`. The first version of this change invented `POUCH_RELAY_URL` and
+`POUCH_RELAY_SPKI_PIN` in the core and left the CLI's copy alone — two readers
+of the same setting under two names, which is exactly what D-046 was written
+about. The failure mode is concrete: a user reads the guide, sets the documented
+variable, and one of the two clients ignores it. The CLI's reader was deleted
+and it calls the core.
+
+**Deployment configuration, not a user preference.** It is not on a settings
+screen and nothing the UI can write reaches it. This is the same boundary
+`TorRelayConfig::from_env` already draws: a client that can be pointed at an
+arbitrary relay from its own interface is a client that can be *talked into*
+being pointed there. Aiming a client at a hostile relay does not expose message
+content — the relay never holds a key, and the server-blindness test asserts it
+— but it hands that operator the inbox identifiers and connection timing
+`THREAT_MODEL.md` §5 lists as visible, and it silently breaks delivery.
+
+**Fails closed, unchanged.** D-017 refuses a non-loopback address with no pin.
+Setting `POUCH_RELAY` alone to a remote host is therefore an error rather than a
+silent downgrade to unpinned TLS.
+
+**What this exposed:** `pouch-relay` serves plain HTTP — `axum::serve`, no TLS
+acceptor. So the pinned direct route requires a reverse proxy terminating TLS in
+front of it, and for two people on separate machines the practical route is the
+Phase 4 onion service, which needs no certificate, no domain and no port
+forwarding. `TESTING_WITH_A_FRIEND.md` documents that route and says why the
+other one is not offered as the easy path.
+
+---
+
+## D-050 — Windows releases are unsigned, and say so
+
+**Date:** 2026-08-09
+**Status:** accepted
+**Phase:** 6 (packaging)
+
+`.github/workflows/release.yml` builds on a `v*` tag and publishes the NSIS
+installer, the MSI, the relay and the CLI.
+
+**No code signing.** An Authenticode certificate costs money and belongs to a
+legal identity; there is neither for a student project. The consequence is real
+and is not hidden: SmartScreen tells the user the publisher is unknown, and it
+is correct to. Both the release body and the test guide state it and give a
+`Get-FileHash` command against a published `SHA256SUMS.txt` — a check that
+actually establishes the file is the one the build produced, unlike clicking
+through a warning. The hash is explicitly described as proving the file is
+unmodified and **not** that the software is safe.
+
+**Marked `prerelease: true`,** and it stays that way while the exit criteria in
+`PROGRESS.md` are unmet. Publishing unaudited software as a stable release is
+the kind of implied claim SPEC §2.5 exists to prevent.
+
+**Artifacts are confirmed by `stat`, not by exit code.** `tauri build`
+returning 0 is not the same as an installer existing. This is D-024's pattern
+and the same check the Android ABI step makes: a release whose assets are
+missing looks *finished*, where a failed build looks failed.
+
+**The release gate is smaller than CI's, on purpose.** It runs `cargo test
+--workspace` and not the full matrix. The whole suite already ran on the commit
+the tag points at; re-running it proves nothing new about the artifact. What is
+worth re-running is the core suite on Windows, because the release job is the
+only one that builds it for that target.
+
+---
+
+## D-051 — The relay address is settable from the Android UI
+
+**Date:** 2026-08-09
+**Status:** accepted. Supersedes the scope of D-049's "nothing the UI can write
+reaches it" for the Android client only. Desktop and CLI are unchanged.
+
+D-049 made the relay address deployment configuration, read once from the
+environment, and gave the reason plainly: a client that can be pointed at an
+arbitrary relay from its own interface is a client that can be *talked into*
+being pointed there.
+
+That boundary is free on desktop and on the CLI, where a shell exists and
+`POUCH_RELAY` can be set before launch. **Android has no shell and no per-app
+environment.** A `BuildConfig` field is the only equivalent, and it is fixed at
+compile time.
+
+So holding D-049's line on Android means one of:
+
+1. **An APK per relay.** Whoever wants to talk to a different relay rebuilds the
+   app. In practice that means one person builds it and everyone else installs
+   *their* APK — so the address and the binary both become somebody else's
+   choice, and the recipient can verify neither. That is a strictly worse
+   outcome than the one D-049 was guarding against.
+2. **A single hardcoded relay** the project operates. This is the Signal model
+   and it genuinely is better for users, but it contradicts SPEC §7 —
+   self-hostable relay, no central service — and there is no infrastructure to
+   run it on.
+3. **No Android client.**
+
+### What was decided
+
+The address is settable from the app, stored in `SharedPreferences`, and read
+once at startup like every other client reads its own source.
+
+The screen that sets it states the cost in `THREAT_MODEL.md` §5's own terms
+rather than presenting a neutral field: pointing at a hostile relay does **not**
+expose message content — the relay holds no key and the server-blindness test
+asserts it — but it does hand that operator the inbox identifiers and connection
+timing already listed as visible, and a merely *wrong* address means silent
+non-delivery.
+
+Saving restarts the app rather than re-pointing a live session. The core reads
+its relay once and holds it for the process lifetime; switching in place would
+put part of a conversation on one relay and part on another with the Custody
+Strip unable to say which. The button says it will close the app before it does.
+
+### Tor was unreachable on Android before this
+
+`SessionConfig::tor` called `TorRelayConfig::from_env`. On a phone that variable
+can never be set, so `connect_tor` returned `NoTorConfigured` unconditionally
+while the transport screen offered Tor as a choice — an option that could not be
+taken. The onion address now arrives from Kotlin alongside the direct one.
+
+A value that does not end in `.onion` is **refused**, not ignored. Accepting one
+would produce a route the app calls Tor over a connection that never entered the
+Tor network, and the Custody Strip would read `TOR`. That is a reassuring
+indicator over an untrue state, which Prime Directive 3 forbids outright. Three
+JNI tests and five Android JVM tests cover the rule.
+
+### Rejected
+
+- **Storing it encrypted.** It is an address, not a secret. Encrypting it would
+  imply it needed protecting and would put a second key beside the one that
+  actually matters.
+- **A relay picker with a curated list.** Implies the project vetted the
+  operators. It has not and cannot.
+- **Silently falling back to the build default on a bad address.** The user
+  would believe they had switched. `isConfigured` exists so the UI can tell the
+  difference between "not set" and "set to the default".
+
+---
+
+## D-052 — The relay ships inside the desktop installer as a sidecar
+
+**Date:** 2026-08-09
+**Status:** accepted
+
+Until now the two-person setup needed `pouch-relay.exe` downloaded separately
+and started from a terminal with an environment variable set. That is a real
+barrier for the people this is meant to be usable by, and it made "standalone"
+false: the client depended on somebody else having done a second install.
+
+The relay binary is now declared as a Tauri `externalBin`, staged into
+`clients/desktop/src-tauri/binaries/` by `scripts/stage-relay-sidecar.sh`, and
+bundled into both the NSIS installer and the MSI. A **Host a relay** screen
+starts it as a child process, shows the onion address once it is published, and
+stops it on exit.
+
+**Verified by extracting the built MSI**, not by trusting the build. The
+guardrail here matters more than usual: an installer that builds successfully
+while missing a component looks *finished*, where a failed build looks failed.
+`stat` on the staged binary, a size delta on the installer, and an extraction
+that put `pouch-relay.exe` beside `pouch-desktop.exe` and ran it.
+
+### What it does not do
+
+**The relay is not started automatically, and hosting is not the default.** A
+messaging app that opens a listening socket and publishes an onion service
+without being asked is doing something the user did not consent to. It is a
+button with an explanation of what running one means.
+
+**Both people still cannot be offline at once.** Whoever hosts has to be
+running for messages to move. Bundling removes the second *install*, not the
+requirement that a relay exist somewhere. The screen says so rather than
+implying the app is peer-to-peer.
+
+### Rejected
+
+- **`tauri-plugin-shell`.** It brings a general command-execution permission
+  surface to do one thing that `std::process::Command` already does. The plugin
+  is the larger attack surface for the smaller convenience.
+- **Starting the relay on launch.** Above.
+- **A Windows service.** Survives reboots, which is the right answer for a real
+  deployment and the wrong one for software a person is trying out — an
+  uninstall that leaves a service running and a socket open is a bad surprise.
+
+---
+
+## D-053 — The Android release build is not minified or obfuscated
+
+**Date:** 2026-08-09
+**Status:** accepted
+
+`isMinifyEnabled` was `true` in the release build type. It arrived with the
+Android Studio template and was never argued for, which is the actual problem —
+R8 changes what ships, and nothing in this repository had made a case for it.
+
+It is now `false`, and `proguard-rules.pro` is written and correct so that
+reversing this is one line rather than a debugging session.
+
+### Why off
+
+**Obfuscation protects nothing here.** The source is public. Renaming
+`PouchNative` to `a` in a build whose code anyone can read is the shape SPEC
+§2.5 calls security theatre: it looks like hardening, costs real legibility, and
+defends against an attacker who does not exist. The cost is concrete — a stack
+trace from a stranger's crash is unreadable without a mapping file, and nothing
+in the release workflow collects one.
+
+**The size argument does not survive contact with the numbers.** Each ABI
+carries roughly 37 MB of native library — arti, OpenMLS and SQLCipher — none of
+which R8 can touch. Shrinking Kotlin and Compose bytecode off that is a
+single-digit-megabyte win on an artifact dominated by Rust.
+
+**Every way R8 breaks this app breaks it at runtime.** Three name-based
+couplings cross the JNI boundary, and R8's model is that an unreferenced symbol
+is unused:
+
+- `lib.rs` exports `Java_com_pouch_core_PouchNative_nativeStart` and
+  `…_nativeCall`. The package and class name are *inside the symbol*.
+- Errors are thrown by looking up the literal string
+  `"com/pouch/core/PouchException"`.
+- 25 `@Serializable` DTOs are decoded by field name from JSON the Rust side
+  wrote. A renamed field does not throw — it decodes to its default.
+
+The first two fail as `UnsatisfiedLinkError` on launch. The third fails silently,
+which is worse. On a client that has never run on a device, adding a transform
+whose failures are invisible until first launch is the opposite of Prime
+Directive 4.
+
+### Rejected
+
+- **Keeping R8 on with the rules in `proguard-rules.pro`.** The rules are
+  probably right. "Probably right" is not something to establish for the first
+  time on the artifact a stranger installs.
+- **`isShrinkResources` without obfuscation.** Trims unused resources, which are
+  not what is large here, and still reorganises the APK on a build nobody has
+  launched.
+
+### Revisit when
+
+The app has run on a device, crash reports are collected somewhere with a
+mapping file, and someone can state what the reduction actually buys.

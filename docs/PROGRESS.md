@@ -12,13 +12,13 @@ Do not begin a phase before the previous phase meets its exit criteria.
 
 | | |
 |---|---|
-| **Phase complete** | 0 — Foundation · 1 — Working 1:1 encrypted chat · 2 — Storage control and hardening · 3 — Attachments and compression · 4 — Tor transport and sealed sender, all **fully**. Phase 4's exit criteria are met and were verified against the live Tor network, not asserted — see that phase's section below for exactly what was run and what was not. |
-| **Phase next** | 5 — Android client. Not started. |
-| **Branches** | `main` (repository default) and `develop`, both pushed; `main` intentionally left behind `develop` — see the note in this section's history for why. `phase-4-tor-sealed-sender` holds all Phase 4 work, pushed to origin. **Not yet merged to `develop`** — it merges by fast-forward once its final review is clean, per `superpowers:finishing-a-development-branch`. The worktree is `.worktrees/phase-4-tor/`. |
-| **Blocked on** | Nothing. One open *design* item, deliberately deferred rather than blocked: cover traffic (D-044) needs a specification from the project owner before anyone implements it. |
-| **Tests** | 145 Rust core + 14 end-to-end + 14 relay + 4 server-blindness = **177 Rust** (1 ignored — the live-Tor test, which needs real network access and is run by hand) · **44 frontend**. Was 163 Rust / 36 frontend at the start of Phase 4. |
-| **CI** | green on `phase-4-tor-sealed-sender` through commit `2a52a71`, confirmed via `gh run list`. Everything below was also verified locally: `cargo fmt --check`, `clippy -D warnings`, the full suite, both guardrail scripts, `cargo audit`, the desktop crate's own `cargo check --all-targets --locked`, and the frontend's typecheck/test/build. **The Tauri window has still never been launched** — this environment cannot run a GUI — so every claim about how a screen *looks* rests on build, typecheck, and `renderToStaticMarkup` assertions, not on anyone seeing it. |
-| **Version** | `0.1.3`, bumped at Phase 4 close-out per the project owner's instruction to bump after each phase or critical fix. Four files move together — see `docs/CONTEXT.md`'s conventions list. |
+| **Phase complete** | 0 · 1 · 2 · 3 · 4, all **fully**. Phase 4's exit criteria were verified against the live Tor network, not asserted. Merged to `develop` by the project owner via PR #3 (`c2f3197`). |
+| **Phase in progress** | 5 — Android client. **Does not meet its exit criteria and cannot from this environment**: the criterion is an APK running on a physical device exchanging messages with the desktop client, and there is no device, no emulator and no signing key here. What now exists is nine of the twelve SPEC §6.7 screens, all compiling and lint-clean in CI — attachment preview, backup, and wipe are absent, and the settings screen says so on its face. Alongside it, **packaging work landed out of phase order**: the relay ships inside the Windows installer (D-052) and the Android relay address is settable from the app (D-051), because without either, two people cannot use this at all. See both sections below. |
+| **Branches** | `main` and `develop`, both pushed; `main` intentionally behind `develop`. `phase-5-android` holds the Phase 5 work, pushed to origin, **not merged**. No worktree this time — the Phase 4 worktree at `.worktrees/phase-4-tor/` is merged and can be removed. |
+| **Blocked on** | Nothing in code. **Two design items need the project owner**, both recorded rather than improvised: cover traffic (D-044) and Android Keystore (D-035, SPEC §2.6 — "an implementation shortcut would mean storing a key in a less protected location"). |
+| **Tests** | 149 Rust core + 14 end-to-end + 14 relay + 4 server-blindness = **181 Rust workspace** (1 ignored — the live-Tor test, run by hand) · **14 Android bridge** (`clients/android/jni`, run on the host; was 11, plus three for the onion-address rule) · **52 desktop frontend** (was 44, plus eight for the Hosting screen) · **16 Android JVM** (11 Custody Strip + 5 relay-address validation). |
+| **CI** | Seven jobs green on `phase-5-android`. `android-bridge` cross-compiles all four ABIs; `android-app` runs the JVM tests, lint, `assembleDebug`, the merged-manifest check, and a `--dry-run` of `assembleRelease bundleRelease` that resolves the release task graph without executing it. `release.yml` published **v0.1.5** and **v0.1.6 (Windows half only** — installer and MSI both carry the relay; the Android job failed in configuration, fixed for v0.1.7). What CI does **not** show is anything executing on an Android device, or two people using the desktop build. |
+| **Version** | `0.1.7`. Six files plus **four** lock files move together — `package-lock.json` is one of them, and had read `0.1.3` since that release because `npm ci` enforces dependency agreement but not the root version. `SPEC_PHASE` deliberately stays at `4`: Phase 5 is not closed — its exit criterion is an APK running on a physical device, and nothing here has run on one. |
 
 ### Owed to the project owner
 
@@ -833,6 +833,375 @@ dependency accepting a configuration and quietly not providing the capability.
   capture the failure output before doing anything else.**
 
 ---
+
+---
+
+## Phase 5 — Android client · in progress · 2026-08-09
+
+**This phase does not meet its exit criteria and is not close to.** SPEC §9
+requires an APK installed on a physical device exchanging messages with a
+desktop client, and requires the Kotlin UI to mirror the desktop feature set.
+Neither has happened. What follows is what exists, what verified it, and what
+did not.
+
+### The environment, because it determined the design
+
+Checked before any code was written:
+
+| | |
+|---|---|
+| Android SDK | absent |
+| Android NDK | absent |
+| Gradle | absent |
+| `cargo-ndk` | absent |
+| Rust Android targets | none — only `x86_64-pc-windows-msvc` |
+| JDK | 24 present, but AGP 8.7 supports 17–21 |
+| Emulator / device | none |
+
+So *nothing* Android could be compiled locally, let alone run. That is worse
+than the Tauri situation, where at least a CI job builds the shell. The
+response was to build bottom-up: verify what a machine can check, and make the
+part that cannot be checked as small as possible.
+
+### What shipped
+
+**`core/src/views.rs` — the ten client view shapes (D-046).** Not Android work,
+but caused by it. The desktop client defined `ConversationView`,
+`SecurityDetailsView`, `SendResult` and seven others privately in
+`commands.rs`; the Android client needs the same ten. Two hand-maintained
+copies of structures carrying security state drift, and the drift is silent —
+a field added to `SecurityDetails` and missed in one client renders a blank
+where a mechanism should be named. Nothing fails, no test breaks, the screen
+just under-reports what is protecting the user. They now live in the core and
+`commands.rs` converts rather than defines. 3 new tests; desktop `cargo check`,
+clippy and fmt clean on Windows.
+
+**`clients/android/jni/` — the bridge (D-048).** A `cdylib` with its own
+committed `Cargo.lock`, which is exactly the case D-029 named in advance.
+
+The whole JNI surface is **two exported functions**: `nativeStart`, and
+`nativeCall(operation, argsJson)` returning JSON. The desktop equivalent is 35
+separate Tauri commands. The reason for collapsing it is the environment: 35
+hand-marshalled JNI functions would have been 35 pieces of code executable
+nowhere, each an opportunity for a mishandled `JString` or an escaping panic,
+discoverable only on hardware nobody had. One function means the untestable
+surface is one function, and everything behind it — `session.rs`, holding every
+operation and every decision about what happens when no identity is open — is
+ordinary Rust that runs under `cargo test`.
+
+**11 tests pass on this Windows host.** They cover what would otherwise only
+appear on a phone:
+
+- an unlisted operation is refused, not forwarded to the core
+- thirteen operations report `NotOpen` rather than panicking — a panic
+  unwinding across FFI is undefined behaviour
+- a failed send still returns all nine manifest stages
+- a retention typo (`30` for `30d`) is refused rather than silently selecting
+  a policy that deletes messages
+- a malformed recovery key is refused *before* anything is written to disk
+
+**`clients/android/app/` — Gradle, Kotlin, Compose.** `Pouch.kt` is a typed
+facade, one suspend function per operation, no general-purpose passthrough —
+the same discipline `bridge.ts` has, for the same reason. Every function hops
+to `Dispatchers.IO` itself rather than documenting that callers should, because
+a Tor bootstrap on the main thread is an ANR and "the caller will remember" is
+not a property.
+
+The Custody Strip is keyed by the label the core sends, not by an enum the app
+defines, so a state the core knows and this build does not returns `UNKNOWN` in
+amber rather than matching the wrong entry. 11 JVM unit tests assert what it
+must never do: render an unknown state as verified, treat an empty string as a
+default, describe a changed key without naming interception, or describe Tor
+without naming what it does not hide.
+
+**Two CI jobs**, because they are the only verification available:
+
+- `android-bridge` — fmt, clippy, the 11 host tests, `cargo audit` against this
+  crate's own lock file (the repo-root audit job reads the *workspace* lock, so
+  this tree was previously unscanned), then a four-ABI cross-compile. The
+  cross-compile step does not trust its own exit code: it stats four `.so`
+  files and fails on any missing, because `cargo ndk` exiting 0 with a silently
+  empty target would ship as an APK that crashes on exactly the devices nobody
+  tested. D-024's pattern.
+- `android-app` — JVM unit tests, lint, `assembleDebug`, and a check that the
+  **merged** manifest requests `INTERNET` and nothing else. Merged rather than
+  source, because a permission can arrive from a library's own manifest during
+  merge without anyone editing a file here.
+
+**Two guardrails** (`scripts/check-guardrails.sh` now runs 6 checks):
+
+- no client may import `pouch_core::crypto::` or `::storage::`. D-012 was a
+  convention held up by review, and a second client is exactly when such a
+  convention slips, because the new one is written by copying shapes.
+- every `#[no_mangle]` export must have a `catch_unwind`. Counted rather than
+  grepped, because the failure mode is additive: someone adds a third entry
+  point and forgets the wrapper.
+
+Both were **negative-tested**. An uncaught entry point produced "3 JNI entry
+points but only 2 catch_unwind"; a `crypto::` import named the file and line.
+Exit 1 in both cases.
+
+### Two documentation errors found and corrected
+
+Neither was introduced this session; both had been wrong for some time.
+
+- **`CONTEXT.md` explained the version-bump convention incorrectly.** It said
+  the desktop crate's version must move because
+  `SecurityDetailsView.app_version` reads `env!("CARGO_PKG_VERSION")` from that
+  crate. The macro is invoked in `core/src/api/mod.rs`, so it expands to the
+  **core** crate's version. The desktop version still has to move — it is what
+  the installer reports — but not for the stated reason.
+- **`pouch_core::SPEC_PHASE` read `2`** through the whole of Phases 3 and 4.
+  Nothing referenced it, so nothing forced it to move. That is how an honesty
+  marker rots: under-claiming never breaks a test, so nobody notices. Now `4`.
+
+### RUSTSEC-2026-0212, re-checked as the audit file asked
+
+`.cargo/audit.toml` carried a note left in advance: *"Not reachable today —
+nothing in the compiled graph calls it — but it is the entry to re-check first
+when the Android client lands in Phase 5, since that is aarch64."*
+
+Re-checked, and **the finding changed.** `cargo tree -i libcrux-traits --target
+aarch64-linux-android` resolves `libcrux-secrets 0.0.5` through `libcrux-sha3`,
+`hpke-rs` and `openmls_rust_crypto`. It is genuinely compiled for aarch64 now.
+The old wording described an x86_64-only project.
+
+Still accepted, on different grounds, both written into the file: the
+advisory's own impact is availability only (`VC:N/VI:N/VA:H`), and the path
+that reaches it is `libcrux-sha3`'s SHAKE code, which a SHA-256 ciphersuite
+never calls — the same reasoning already recorded for -0074, -0207 and -0208.
+Not fixable by upgrading: `libcrux-traits 0.0.5` requires `libcrux-secrets
+0.0.5` and 0.0.6 is semver-incompatible under Cargo's 0.0.x rules.
+
+### What was NOT verified, and what is NOT built
+
+Read this before believing anything above implies a working Android app.
+
+- **Nothing has run on a device or an emulator.** This is the important one, and
+  everything below is a qualification of it. CI now proves the code *compiles*
+  and that its host-testable decisions are *correct*; it proves nothing about
+  what happens when the JVM actually calls across the boundary. The JNI
+  marshalling itself — `read_string`, the exception throw, the `jstring` return
+  — has still never executed anywhere.
+- **The cross-compile does pass**, which was an open question when the section
+  above was drafted. All four ABIs link, so `arti`, `openmls` and SQLCipher do
+  build for Android and D-047's vendored OpenSSL was the right call rather than
+  a guess: `aarch64` 37.0 MB, `armv7` 26.5 MB, `x86_64` 36.5 MB, `i686` 36.2 MB,
+  each confirmed by stat rather than by the build's exit code.
+- **The Kotlin does compile**, which was also open. `:app:testDebugUnitTest`,
+  `:app:lintDebug` and `:app:assembleDebug` all pass, and the 11 Custody Strip
+  tests run green. An earlier draft of this section said no Kotlin had been
+  compiled anywhere and that the job should be expected to need iteration; it
+  passed first time, and leaving that claim would have under-reported what is
+  actually verified.
+- **The merged manifest was checked, not just the source one.** It requests
+  INTERNET and nothing else, which is the only way to know a library did not
+  contribute a permission during manifest merge.
+- **Nine of the twelve screens are now written**, which was not true when the
+  bullets above were drafted: conversation view, add contact, safety number,
+  identity-change modal, privacy and storage, transport, security details, and a
+  relay-address screen the desktop client has no equivalent of. **Absent:**
+  attachment preview, backup export and import, and wipe. The settings screen
+  names those three as missing rather than omitting them silently — a phone build
+  that looked complete would lose someone their data the first time they assumed
+  backup was there.
+- **No installable APK exists yet, and the reason is now a missing keystore
+  rather than a broken build.** The v0.1.6 release job failed in `Build the APK
+  and the AAB` at `build.gradle.kts:110` with `path may not be null or empty
+  string` — the workflow passes `POUCH_KEYSTORE_FILE` as an *empty string* when
+  the repository has no signing secrets, `System.getenv` returned `""` rather
+  than null, the null check guarding the signing config passed, and `file("")`
+  threw during configuration, before a single task ran. Blank now counts as
+  absent. Two further defects sat behind that one, unreachable while
+  configuration failed: `proguard-rules.pro` was referenced and did not exist,
+  and R8 was on (now off — D-053). Signing wiring is in place, four values from
+  either `keystore.properties` or CI secrets, but no keystore exists, so an
+  unsigned artifact is the best this can produce until the owner creates one.
+- **The gap that let a tag be spent on a typo is closed.** `android-app` only
+  ever configured the *debug* variant, so the release variant's configuration
+  was first evaluated forty minutes into a tagged release. CI now runs
+  `assembleRelease bundleRelease --dry-run` on every push: it resolves the full
+  release task graph — signing config, `nativeLibsPresent`, `packageRelease`,
+  `bundleRelease` — in fifteen seconds and executes none of it. It does not
+  prove the release *builds*; the release workflow still owns that.
+- **The Custody Strip copy is duplicated** from `CustodyStrip.tsx`. That is the
+  same drift D-046 just removed from the view shapes, and the same fix applies:
+  move it onto the core types the way `Route::explanation` already is.
+
+### Open, and needing the project owner
+
+1. **Android Keystore (D-035).** The largest gap in this client. It uses the
+   same device-file placeholder as the desktop client — a random key in a file
+   beside the database it unlocks. This is a **SPEC §2.6 stop-and-ask**: "an
+   implementation shortcut would mean storing a key in a less protected
+   location." The realistic design has Kotlin unwrap a Keystore-wrapped key and
+   pass the bytes across JNI, which puts key material in a JVM `ByteArray` that
+   cannot be reliably zeroed — a real trade-off, not an obvious win, and one
+   the owner should decide rather than have decided for them.
+2. **Cover traffic (D-044).** Unchanged from Phase 4.
+3. **Video attachments.** SPEC §8.4's video case is still open (D-038).
+4. **The unreproducible flake**,
+   `two_clients_exchange_text_and_the_relay_learns_nothing`. Not seen since.
+
+### Next, in order
+
+1. **Generate a release keystore (owner) and add the four CI secrets**, so the
+   APK is installable rather than unsigned. This is the only thing between
+   v0.1.7 and a phone build someone can put on a device. The build defect that
+   failed v0.1.6 is fixed; what remains is a key that only the owner should
+   hold.
+2. Decide the Keystore question (1 above).
+3. The three missing screens: attachment preview, backup, wipe.
+4. Move the Custody Strip copy into the core, for both clients.
+5. An APK on a real device — the actual exit criterion.
+
+---
+
+## Packaging — a Windows build two people can actually use · 2026-08-09
+
+Out of SPEC's phase order, and deliberately. SPEC's Phase 6 is multi-device and
+groups, which it calls a stretch goal to attempt only once 0–5 are solid. This
+is not that. It is the packaging work that turns a repository into something a
+second person can run, requested by the project owner so the system can be
+tested by two people rather than described to them.
+
+Taken before finishing Phase 5 for a reason worth recording: Phase 5's exit
+criterion is an APK on a physical device, which **no amount of code written
+here can satisfy** — there is no device, no emulator, no SDK. The remaining
+Phase 5 work is eight Compose screens that would compile and never run. A
+Windows build, by contrast, executes. Given a choice between more unverifiable
+code and a smaller amount of code that two people can put under real use, the
+second is worth more, and Prime Directive 4 says ship narrow and working.
+
+### The defect this exposed
+
+`clients/desktop/src-tauri/src/state.rs` had the relay address compiled in:
+
+```rust
+RelayConfig::insecure_local("http://127.0.0.1:8443")
+```
+
+On a development machine that is correct and invisible, because the relay is on
+that machine. In an installer handed to somebody else it means the client can
+only ever reach a relay running on their own laptop — so two people cannot
+exchange anything at all. The repository has said "self-hostable relay" since
+Phase 0. It was true of the architecture and false of every artifact anyone
+could install, and nothing caught it because no artifact had ever been
+installed.
+
+`RelayConfig::from_env` (D-049) now reads `POUCH_RELAY` and `POUCH_RELAY_PIN`,
+and both clients call it.
+
+**The first version of this fix was itself wrong** and is worth writing down.
+It invented `POUCH_RELAY_URL` and `POUCH_RELAY_SPKI_PIN` in the core while
+leaving the CLI's existing `POUCH_RELAY` reader in place — two names for one
+setting, two hand-maintained readers, which is precisely the drift D-046 was
+written about one phase earlier. The failure mode is a user who reads the guide,
+sets the documented variable, and watches one of the two clients ignore it.
+Collapsed onto the CLI's existing names, CLI reader deleted, one definition.
+
+### What is now shipped
+
+**v0.1.5 is published**, built by `.github/workflows/release.yml` from the tag:
+
+| Artifact | Size |
+|---|---|
+| `Pouch-setup.exe` | 7.78 MB — NSIS installer |
+| `Pouch.msi` | 11.57 MB — same client for `msiexec` |
+| `pouch-relay.exe` | 12.21 MB — the relay |
+| `pouch-cli.exe` | 15.30 MB — headless client |
+| `SHA256SUMS.txt` | hashes for all four |
+
+Marked prerelease. Each artifact is confirmed to exist by `stat` before the
+release publishes — `tauri build` exiting 0 is not the same as an installer
+existing, and a release with missing assets looks *finished* where a failed
+build looks failed. The D-024 pattern, same as the Android ABI check.
+
+### The local build proved less than it appeared to
+
+Before tagging, `npx tauri build` was run on this machine and produced a 7.8 MB
+installer. That was recorded here as evidence the workflow was "a transcription
+of a build that ran."
+
+**The first release attempt failed anyway**, in its first step:
+
+```
+libsqlite3-sys build.rs panicked:
+  Missing environment variable OPENSSL_DIR or OPENSSL_DIR is not set
+```
+
+SQLCipher is OpenSSL-backed. This machine has `OPENSSL_DIR` exported globally,
+so the local build found it and the runner did not. A local success that depends
+on an unexported environment variable does not establish that the build is
+self-contained, and the note above was true while implying something false.
+
+**The second attempt failed too**, further in: `LNK1181: cannot open input file
+'libcrypto.lib'`. Setting `OPENSSL_DIR` satisfied the build script's own check
+and then failed at link time, because the Windows installers nest the import
+library — commonly under `lib/VC/x64/MD` — rather than putting it in `lib/`.
+The workflow now searches for `libcrypto.lib` and sets `OPENSSL_LIB_DIR` from
+wherever it actually is.
+
+Both failures share a shape worth naming: **a check passed while the thing it
+was supposed to establish stayed false.** `OPENSSL_DIR` being set is not OpenSSL
+being linkable; a local build succeeding is not a portable build. It is the same
+failure mode as a green test that asserts nothing, and it is the reason the
+artifact step stats files rather than trusting an exit code.
+
+Third attempt succeeded: 62 minutes, all steps green, five assets attached.
+
+**Unsigned** (D-050). No Authenticode certificate exists for a student project,
+so SmartScreen will report an unknown publisher and is right to. Both the
+release body and the test guide say so and give a `Get-FileHash` check against
+the published sums — which establishes the file is the one the build produced,
+and is explicitly described as *not* establishing that the software is safe.
+Marked `prerelease: true` and it stays that way while exit criteria are unmet.
+
+### A second false claim corrected
+
+`docs/CONTEXT.md` has said since Phase 1 that the Tauri crate cannot be compiled
+in this environment, for want of GTK and WebKitGTK. That is a **Linux**
+dependency. On Windows Tauri uses WebView2, which is present. `cargo check
+--locked --release` completes in about a minute and the full bundle builds.
+
+Every desktop change since Phase 1 was therefore pushed to CI to find out
+whether it compiled, when the answer was available locally in a minute. Nothing
+shipped broken because of it — the CI job caught what it needed to — but the
+cost was a round trip per change for four phases. Corrected in `CONTEXT.md`.
+
+### How two people connect, and why it is Tor
+
+`pouch-relay` serves plain HTTP — `axum::serve`, no TLS acceptor. A client
+refuses a non-loopback relay without a pinned key (D-017), and there is nothing
+to pin without a reverse proxy terminating TLS in front of it. So:
+
+- **Relay host** runs `pouch-relay.exe` with `POUCH_RELAY_TOR_STATE` set, which
+  publishes the Phase 4 onion service, and runs their own client on the default
+  loopback address.
+- **The other person** sets `POUCH_RELAY_TOR_ONION` and chooses Tor on the
+  Transport screen.
+
+No certificate, no domain, no port forwarding, no cloud host. This is the first
+time the Phase 4 onion service has had a user-facing purpose rather than being
+a transport option; it turns out to be the thing that makes peer-to-peer
+testing possible at all.
+
+`docs/TESTING_WITH_A_FRIEND.md` is the walkthrough, including a failure table
+and an explicit statement of what the test does and does not demonstrate.
+
+### Not done
+
+- **Never run end to end by two people.** The build exists and the path is
+  documented; nobody has yet completed step 1 through step 7. Until someone
+  does, this is a plausible procedure, not a verified one.
+- **No macOS or Linux build.** The workflow is `windows-latest` only, because
+  that is what was asked for. Adding the other two is mostly a matrix entry,
+  but each needs its own artifact-naming and neither has been tried.
+- **The relay has no TLS of its own**, so the direct remote route stays
+  unavailable without a proxy. Worth building if the onion route proves too
+  slow in practice.
+- **No auto-update.** Tauri supports it and it needs a signing key and a
+  hosted manifest; both are the project owner's to hold.
 
 ## Building and running on Windows · verified 2026-08-01
 

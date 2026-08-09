@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Belt and braces alongside android:allowBackup="false".
+
+  Both cloud backup and device-to-device transfer are excluded outright. The
+  app's private directory holds the SQLCipher database and the sidecar that
+  records how it is keyed; copying that to Google Drive would create the
+  server-side backup this project deliberately does not have (SPEC 7.3).
+
+  Device transfer is excluded too, because the key travels with it: the device
+  file this build uses sits beside the database, so a transfer would move both
+  and carry the protection along with the thing it protects. Revisit when
+  Android Keystore lands (D-035) and the key stops being a file.
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="root" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="root" />
+    </device-transfer>
+</data-extraction-rules>

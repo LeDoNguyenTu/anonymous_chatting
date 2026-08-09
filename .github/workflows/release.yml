@@ -1,0 +1,440 @@
+name: Release (Windows)
+
+# Tag-triggered, not push-triggered. A release is a deliberate act: pushing to a
+# branch should never mint an artifact someone might install.
+#
+#   git tag v0.1.5 && git push origin v0.1.5
+#
+# workflow_dispatch is here so a build can be rehearsed without burning a tag —
+# it produces the same artifacts and skips the release step.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+# Needed to create the release. Scoped to this workflow rather than granted
+# repository-wide.
+permissions:
+  contents: write
+
+jobs:
+  android:
+    name: Build the Android APK and AAB
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: >-
+            aarch64-linux-android,
+            armv7-linux-androideabi,
+            x86_64-linux-android,
+            i686-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: clients/android/jni
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.11.1"
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-ndk
+
+      # -o writes each ABI straight into the directory Gradle packages from,
+      # which is why no copy step follows. --locked because this crate is
+      # outside the workspace and its committed lock file is the only thing
+      # pinning its transitive tree (D-029) — a release is the worst place to
+      # re-resolve.
+      - name: Cross-compile the core for every shipped ABI
+        working-directory: clients/android/jni
+        run: |
+          cargo ndk \
+            -t arm64-v8a \
+            -t armeabi-v7a \
+            -t x86_64 \
+            -t x86 \
+            -o ../app/src/main/jniLibs \
+            build --release --locked
+
+      - name: Confirm every ABI produced a library
+        shell: bash
+        run: |
+          set -eu
+          missing=0
+          for abi in arm64-v8a armeabi-v7a x86_64 x86; do
+            so="clients/android/app/src/main/jniLibs/$abi/libpouch_jni.so"
+            if [ -f "$so" ]; then
+              echo "ok       $abi  $(stat -c%s "$so") bytes"
+            else
+              echo "MISSING  $so"
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+      # The release keystore, if the repository has one.
+      #
+      # Absent secrets are not an error: the job then produces an unsigned
+      # release APK plus a debug-signed one, and the release notes say which is
+      # which. Generating a key here instead would put the app's permanent
+      # identity in CI logs — and on Play, the first key you ship is the only
+      # key that can ever update the app.
+      # Decoded to a file; the three passwords stay in the environment and are
+      # never written to disk. An earlier version of this step wrote all four
+      # into keystore.properties through an *unquoted* heredoc, which expanded
+      # them as shell text — a password containing a backtick or $( ) would have
+      # been executed rather than stored. Gradle reads these variable names
+      # directly, so the file is not needed at all.
+      - name: Restore the signing keystore
+        id: keystore
+        if: env.KEYSTORE_BASE64 != ''
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        shell: bash
+        run: |
+          set -eu
+          printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
+          # Confirm it decoded to a keystore rather than to nothing. A truncated
+          # secret would otherwise surface as an unsigned artifact that looks
+          # deliberate.
+          if [ ! -s "$RUNNER_TEMP/release.jks" ]; then
+            echo "ANDROID_KEYSTORE_BASE64 decoded to an empty file."
+            exit 1
+          fi
+          echo "signed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Unit tests
+        working-directory: clients/android
+        run: gradle :app:testDebugUnitTest --no-daemon
+
+      # POUCH_RELAY_URL is a repository variable, not a secret — a relay address
+      # is not secret, and the client refuses a non-loopback address without a
+      # pin anyway. Unset means the emulator loopback, which is unreachable from
+      # a real handset: such a build queues everything and delivers nothing.
+      # Stated in the release notes rather than left to be discovered.
+      - name: Build the APK and the AAB
+        working-directory: clients/android
+        env:
+          RELAY_URL: ${{ vars.POUCH_RELAY_URL }}
+          # Read by app/build.gradle.kts when no keystore.properties exists.
+          # Empty when the repository has no signing secrets, which produces an
+          # unsigned release APK rather than a build failure.
+          POUCH_KEYSTORE_FILE: ${{ steps.keystore.outputs.signed == 'true' && format('{0}/release.jks', runner.temp) || '' }}
+          POUCH_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          POUCH_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          POUCH_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -eu
+          args=""
+          if [ -n "${RELAY_URL:-}" ]; then
+            args="-PpouchRelayUrl=$RELAY_URL"
+            echo "Relay: $RELAY_URL"
+          else
+            echo "No POUCH_RELAY_URL set — using the emulator default."
+          fi
+          gradle :app:assembleRelease :app:bundleRelease :app:assembleDebug \
+            --no-daemon $args
+
+      - name: Collect the artifacts and confirm each one exists
+        shell: bash
+        run: |
+          set -eu
+          mkdir -p dist
+          out=clients/android/app/build/outputs
+
+          missing=0
+          copy_or_fail() {
+            src=$(find "$1" -name "$2" 2>/dev/null | head -1)
+            if [ -n "$src" ] && [ -f "$src" ]; then
+              cp "$src" "dist/$3"
+              echo "ok       $3  $(stat -c%s "$src") bytes"
+            else
+              echo "MISSING  $3  (looked for $2 under $1)"
+              missing=1
+            fi
+          }
+
+          # The release APK is named -unsigned by AGP when no signing config
+          # applied, so both spellings are tried and whichever exists is taken.
+          if find "$out/apk/release" -name '*-release.apk' | grep -q .; then
+            copy_or_fail "$out/apk/release" '*-release.apk' "Pouch.apk"
+          else
+            copy_or_fail "$out/apk/release" '*-release-unsigned.apk' "Pouch-unsigned.apk"
+          fi
+          copy_or_fail "$out/bundle/release" '*-release.aab' "Pouch.aab"
+          copy_or_fail "$out/apk/debug"      '*-debug.apk'   "Pouch-debug.apk"
+
+          exit "$missing"
+
+      - name: Checksums
+        shell: bash
+        run: |
+          cd dist
+          sha256sum * | tee SHA256SUMS-android.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pouch-android
+          path: dist/
+
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          prerelease: true
+
+  windows:
+    name: Build the desktop app and the relay for Windows
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            clients/desktop/src-tauri
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: clients/desktop/package-lock.json
+
+      # SQLCipher is OpenSSL-backed, so `libsqlite3-sys`'s build script needs
+      # OpenSSL and panics without it. On Linux the system copy is found
+      # automatically; on Windows nothing points at one.
+      #
+      # Worth stating plainly because it caught the first release attempt: the
+      # same build succeeds on the developer's Windows machine and failed here,
+      # purely because that machine has OPENSSL_DIR exported globally. A local
+      # success that depends on an unexported environment variable is not
+      # evidence the build is self-contained.
+      #
+      # Both the root *and* the import library are located, because setting
+      # OPENSSL_DIR alone got the build script past its check and then failed at
+      # link time with `cannot open input file 'libcrypto.lib'` — the Windows
+      # installers nest the .lib under lib/VC/x64/MD rather than lib/, and which
+      # layout you get depends on who built the installer. Searching for the
+      # file is the only thing that survives that.
+      - name: Locate OpenSSL for SQLCipher
+        shell: bash
+        run: |
+          set -eu
+
+          root=""
+          for candidate in \
+            "/c/Program Files/OpenSSL" \
+            "/c/Program Files/OpenSSL-Win64" \
+            "${VCPKG_INSTALLATION_ROOT:+$(cygpath -u "${VCPKG_INSTALLATION_ROOT}")/installed/x64-windows}" \
+            "/c/Strawberry/c"; do
+            if [ -n "$candidate" ] && [ -d "$candidate/include/openssl" ]; then
+              root="$candidate"
+              break
+            fi
+          done
+
+          if [ -z "$root" ]; then
+            echo "No OpenSSL include directory found."
+            echo "openssl on PATH: $(command -v openssl 2>/dev/null || echo none)"
+            echo "VCPKG_INSTALLATION_ROOT: ${VCPKG_INSTALLATION_ROOT:-unset}"
+            ls "/c/Program Files" 2>/dev/null | grep -i ssl || echo "nothing matching ssl"
+            exit 1
+          fi
+
+          # The import library, wherever this installer decided to put it.
+          lib=$(find "$root" -name 'libcrypto.lib' -type f 2>/dev/null | head -1)
+          if [ -z "$lib" ]; then
+            echo "Found OpenSSL headers at $root but no libcrypto.lib beneath it."
+            echo "Contents of $root/lib:"
+            ls -R "$root/lib" 2>/dev/null | head -40
+            exit 1
+          fi
+          libdir=$(dirname "$lib")
+
+          {
+            echo "OPENSSL_DIR=$(cygpath -w "$root")"
+            echo "OPENSSL_LIB_DIR=$(cygpath -w "$libdir")"
+            echo "OPENSSL_INCLUDE_DIR=$(cygpath -w "$root/include")"
+          } >> "$GITHUB_ENV"
+
+          echo "OpenSSL root:    $root"
+          echo "libcrypto.lib:   $lib"
+
+      # The tests that gate a release are the ones that can run here. This is a
+      # deliberately smaller gate than CI: the full suite already ran on the
+      # commit this tag points at, and re-running it would not tell us anything
+      # new about the artifact. What *is* worth re-running on Windows is the
+      # core suite, because this is the only job that builds it for this target.
+      - name: Test the core on the target platform
+        run: cargo test --workspace
+
+      - name: Build the frontend
+        working-directory: clients/desktop
+        run: |
+          npm ci
+          npm run build
+
+      # Before the bundle, because `tauri-build` validates every declared
+      # externalBin against the host triple in build.rs — a missing sidecar
+      # fails compilation, not just bundling. This also produces the
+      # `pouch-relay.exe` the standalone artifact is copied from below, so the
+      # relay is built once and shipped twice: inside the installer, and beside
+      # it for anyone who wants to run it headless.
+      - name: Stage the relay sidecar
+        shell: bash
+        run: ./scripts/stage-relay-sidecar.sh
+
+      # --locked, because this crate is outside the workspace and its committed
+      # Cargo.lock is the only thing pinning its transitive dependencies
+      # (D-029). A release is the worst possible place to re-resolve.
+      - name: Build the desktop bundle
+        working-directory: clients/desktop
+        run: npx tauri build -- --locked
+
+      - name: Build the CLI
+        run: cargo build --release --locked -p pouch-cli
+
+      # `tauri build` exiting 0 is not the same as an installer existing, and a
+      # release whose assets are missing is worse than a failed build — it looks
+      # finished. Same reasoning as the Android ABI check (D-024).
+      - name: Collect the artifacts and confirm each one exists
+        shell: bash
+        run: |
+          set -eu
+          mkdir -p dist
+
+          bundle=clients/desktop/src-tauri/target/release/bundle
+          nsis=$(find "$bundle/nsis" -name '*-setup.exe' 2>/dev/null | head -1)
+          msi=$(find "$bundle/msi" -name '*.msi' 2>/dev/null | head -1)
+
+          missing=0
+          copy_or_fail() {
+            if [ -n "$1" ] && [ -f "$1" ]; then
+              cp "$1" "dist/$2"
+              echo "ok       $2  $(stat -c%s "$1") bytes"
+            else
+              echo "MISSING  $2"
+              missing=1
+            fi
+          }
+
+          copy_or_fail "$nsis"                          "Pouch-setup.exe"
+          copy_or_fail "$msi"                           "Pouch.msi"
+          copy_or_fail "target/release/pouch-relay.exe" "pouch-relay.exe"
+          copy_or_fail "target/release/pouch-cli.exe"   "pouch-cli.exe"
+
+          exit "$missing"
+
+      # Before the release is published, not after. The checksums are the only
+      # thing a user can verify against, so a release must never exist — even
+      # briefly — with binaries and no sums to check them by.
+      - name: Checksums
+        shell: bash
+        run: |
+          cd dist
+          sha256sum * | tee SHA256SUMS.txt
+
+      # Kept for workflow_dispatch runs, which produce no release to attach to.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pouch-windows
+          path: dist/
+
+      - name: Publish the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          # Prerelease, and it will stay that way while the exit criteria in
+          # docs/PROGRESS.md are unmet. Marking unaudited student software as a
+          # stable release is the kind of claim SPEC §2.5 exists to prevent.
+          prerelease: true
+          body: |
+            **Unaudited student software. Not reviewed by any cryptographer.
+            Do not use this for anything that matters.**
+
+            ### Binaries are unsigned
+
+            **Windows**: no code-signing certificate exists for this project.
+            SmartScreen will warn that the publisher is unknown, and it is right
+            to. Verify the SHA-256 against the sums file before running anything
+            — that is a real check, where clicking through the warning is not.
+
+            **Android**: the APK and AAB are signed only when the repository has a
+            keystore configured. An unsigned release APK cannot be installed. The
+            debug APK is always signed with the debug key and can be installed
+            anywhere; it is suffixed `.debug` so it cannot replace a release
+            build. The AAB is for Play — APK is what you sideload.
+
+            A matching hash proves the file is the one this build produced. It
+            does not prove the software is safe.
+
+            ### What is in this release
+
+            | File | What it is |
+            |---|---|
+            | `Pouch-setup.exe` | Desktop client installer (NSIS) |
+            | `Pouch.msi` | The same client, for `msiexec` |
+            | `pouch-relay.exe` | The relay. One person runs this. |
+            | `pouch-cli.exe` | Headless client, for testing without a window |
+            | `Pouch.apk` or `Pouch-unsigned.apk` | Android client, release build |
+            | `Pouch.aab` | Android App Bundle for Play |
+            | `Pouch-debug.apk` | Debug build with `.debug` suffix, always signed |
+            | `SHA256SUMS.txt` | Hashes for Windows artifacts |
+            | `SHA256SUMS-android.txt` | Hashes for Android artifacts |
+
+            ### Setting it up with another person
+
+            See [`docs/TESTING_WITH_A_FRIEND.md`](docs/TESTING_WITH_A_FRIEND.md).
+
+            The client talks to `127.0.0.1:8443` unless told otherwise, so two
+            people on different machines need one of `POUCH_RELAY` (a relay you
+            host behind TLS, with `POUCH_RELAY_PIN`) or `POUCH_RELAY_TOR_ONION`
+            (the relay's onion address). The onion route is the documented one:
+            it needs no certificate, no domain and no port forwarding.
+
+            ### Known limits in this build
+
+            - **Nobody has completed the two-person walkthrough yet.** The
+              build exists and the procedure is written down; it has not been
+              run end to end by two people.
+            - **The Android client has never run on a device or emulator.** It
+              compiles, its bridge is unit-tested on a host, and its JNI
+              marshalling has never executed anywhere. Treat the first launch as
+              the first test. `THREAT_MODEL.md` §4 covers this explicitly.
+            - **Android asks for the relay address on first run** and stores it
+              in the app's own private preferences (D-051). The address compiled
+              into the build is only what that field is pre-filled with. Left at
+              its default it is an emulator loopback, unreachable from a handset,
+              and every message queues without being delivered — so the first-run
+              screen cannot be skipped. Changing it later restarts the app,
+              because the core reads its relay once per process.
+            - The release APK is **not obfuscated or minified**. R8 is off
+              deliberately: this source is public, so renaming its classes would
+              protect nothing, and the two Rust entry points plus 25 decoded DTOs
+              are all reached by name at runtime.
+            - Android has no Keystore integration; the database key is a file in
+              the app's private directory (D-035). Same as desktop without a
+              passphrase.
+            - The local database key is a file beside the database unless a
+              passphrase is set (D-035). Set a passphrase.
+            - Backup, attachment preview and wipe are not reachable from the
+              Android UI in this build. They exist in the core and on desktop.
+            - Read `docs/THREAT_MODEL.md` §4 before trusting this with
+              anything.

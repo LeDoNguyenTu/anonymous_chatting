@@ -157,6 +157,44 @@ impl RelayConfig {
         }
     }
 
+    /// The direct relay this deployment talks to, from the environment.
+    ///
+    /// `POUCH_RELAY` names it and `POUCH_RELAY_PIN` pins it. Nothing set means
+    /// the caller's own default — for both shipped clients that is loopback, so
+    /// a fresh install keeps talking to a relay on the same machine.
+    ///
+    /// These are the names the CLI has used since Phase 1. This function exists
+    /// because the desktop client had its address *compiled in*, so every copy
+    /// of a distributed build could only reach a relay on the machine it ran
+    /// on — which made "self-hostable relay" true of the architecture and false
+    /// of the artifact. Lifting the CLI's own logic here rather than writing a
+    /// second copy in the desktop client is D-046's rule applied to
+    /// configuration: two hand-maintained readers of one variable drift, and
+    /// the failure mode is a user who sets the documented variable and watches
+    /// one of the two clients ignore it.
+    ///
+    /// Deliberately **not** a user preference, and deliberately not read from
+    /// anywhere the UI can write. It is the same boundary
+    /// [`TorRelayConfig::from_env`] already draws, for the same reason: a client
+    /// that can be pointed at an arbitrary relay from its own interface is a
+    /// client that can be talked into it. Pointing at the wrong relay does not
+    /// expose message content — the relay never holds a key — but it does hand
+    /// that operator the inbox identifiers and connection timing that
+    /// `THREAT_MODEL.md` §5 lists as visible, and it silently breaks delivery.
+    ///
+    /// No pin plus a non-loopback address is still refused by
+    /// [`RelayClient::new`] rather than warned about (D-017). Setting the URL
+    /// alone therefore fails closed, which is the intended behaviour: the
+    /// missing pin is a configuration error, not a downgrade to accept.
+    pub fn from_env(default_url: &str) -> Self {
+        let base_url = std::env::var("POUCH_RELAY").unwrap_or_else(|_| default_url.to_string());
+        let spki_pin = std::env::var("POUCH_RELAY_PIN")
+            .ok()
+            .filter(|pin| !pin.trim().is_empty());
+
+        Self { base_url, spki_pin }
+    }
+
     /// Whether the configured host is genuinely a loopback address.
     ///
     /// Compared against the host component after an exact prefix match, so a
@@ -480,6 +518,59 @@ mod tests {
                 "{url} must not be treated as loopback"
             );
         }
+    }
+
+    /// One test rather than four, because environment variables are process
+    /// global and `cargo test` runs test functions on parallel threads. Four
+    /// tests each setting and clearing the same two variables would pass alone
+    /// and interfere with one another under load — a flake that appears to be
+    /// about transport configuration and is really about test isolation. The
+    /// Tor equivalent above is a single test for the same reason.
+    #[test]
+    fn from_env_reads_the_deployment_relay_and_still_fails_closed() {
+        // Nothing set: the caller's default, unpinned, which is loopback for a
+        // fresh install and must stay usable.
+        std::env::remove_var("POUCH_RELAY");
+        std::env::remove_var("POUCH_RELAY_PIN");
+        let config = RelayConfig::from_env("http://127.0.0.1:8443");
+        assert_eq!(config.base_url, "http://127.0.0.1:8443");
+        assert_eq!(config.spki_pin, None);
+        assert!(
+            RelayClient::new(config).is_ok(),
+            "the default must remain a working local relay"
+        );
+
+        // Both set: the deployment's relay, pinned.
+        std::env::set_var("POUCH_RELAY", "https://relay.example.com:8443");
+        std::env::set_var("POUCH_RELAY_PIN", "a".repeat(64));
+        let config = RelayConfig::from_env("http://127.0.0.1:1");
+        assert_eq!(config.base_url, "https://relay.example.com:8443");
+        assert_eq!(config.spki_pin, Some("a".repeat(64)));
+        assert!(RelayClient::new(config).is_ok());
+
+        // An empty variable is what `set VAR=` leaves behind. Reading it as a
+        // pin would fail later with a certificate error rather than now with
+        // the honest "you have not set a pin".
+        std::env::set_var("POUCH_RELAY_PIN", "   ");
+        assert_eq!(
+            RelayConfig::from_env("ignored").spki_pin,
+            None,
+            "a whitespace-only pin is not a pin"
+        );
+
+        // URL without a pin: D-017's refusal still applies. Setting the address
+        // alone must fail closed rather than fall back to the public CA system.
+        std::env::remove_var("POUCH_RELAY_PIN");
+        let config = RelayConfig::from_env("http://127.0.0.1:1");
+        assert!(
+            matches!(
+                RelayClient::new(config),
+                Err(TransportError::PinMismatch(_))
+            ),
+            "an unpinned remote relay must be refused however it was configured"
+        );
+
+        std::env::remove_var("POUCH_RELAY");
     }
 
     #[test]

@@ -31,12 +31,24 @@ pub mod padding;
 pub mod storage;
 /// TLS with SPKI pinning, offline queue, Tor (Phase 1 and 4).
 pub mod transport;
+/// The shapes clients render, defined once so two clients cannot drift.
+pub mod views;
 
 pub use api::{
     new_recovery_key, ApiError, BackupError, ConversationSummary, IdentityChangeNotice,
     IdentityState, Message, Pouch, RetentionPolicy, SecurityDetails, RECOVERY_KEY_BYTES,
 };
+pub use views::{
+    backup_file_name, AttachmentView, ConversationView, ExportBackupView, IdentityChangeView,
+    ImportBackupView, ManifestRow, MessageView, RelayVisibilityView, SecurityDetailsView,
+    SendResult, TransportOptionView,
+};
 
 /// The build phase this crate implements. Anything above this is documented
 /// intent, not working software.
-pub const SPEC_PHASE: u8 = 2;
+///
+/// Bump this in the same commit that closes a phase. It read `2` through the
+/// whole of Phases 3 and 4 because nothing forced it to move, which is the
+/// failure mode a stale honesty marker has: it under-claims silently and
+/// nobody notices, because under-claiming never breaks a test.
+pub const SPEC_PHASE: u8 = 4;

@@ -122,6 +122,26 @@ export interface AttachmentView {
   content: Uint8Array;
 }
 
+/**
+ * What the bundled relay is doing (D-050).
+ *
+ * Four fields rather than one enum because the interesting states are
+ * combinations: running with no address yet (Tor is still publishing), running
+ * with an address (ready to share), stopped with an error (it died and the
+ * reason matters), stopped without one (nobody started it).
+ *
+ * `onionAddress` is `null` until the relay prints one. A screen must show the
+ * address only when this field carries it — never a remembered value, because a
+ * remembered address outlives the relay that owned it and would send a friend
+ * to something that is no longer listening.
+ */
+export interface LocalRelayStatus {
+  running: boolean;
+  onionAddress: string | null;
+  bindAddress: string | null;
+  error: string | null;
+}
+
 export interface PouchBridge {
   hasIdentity(): Promise<boolean>;
   createIdentity(displayName: string): Promise<string>;
@@ -143,6 +163,16 @@ export interface PouchBridge {
   transportOptions(): Promise<TransportOption[]>;
   connectTor(): Promise<void>;
   useDirectRelay(): Promise<void>;
+
+  /* The bundled relay (D-050). `startLocalRelay` is slow — publishing an onion
+   * service takes tens of seconds — and its resolution means the process
+   * started, not that an address exists yet. `localRelayStatus` is what says
+   * whether there is an address, and it is the only thing a screen may show an
+   * address from: a screen that remembers one it printed earlier would keep
+   * showing it after the relay died. */
+  startLocalRelay(): Promise<LocalRelayStatus>;
+  stopLocalRelay(): Promise<LocalRelayStatus>;
+  localRelayStatus(): Promise<LocalRelayStatus>;
   securityDetails(): Promise<SecurityDetailsView>;
   relayVisibility(blobSize: number): Promise<RelayVisibilityView>;
   wipeAll(): Promise<void>;
@@ -359,6 +389,12 @@ export function tauriBridge(
     connectTor: () => invoke<void>("connect_tor"),
 
     useDirectRelay: () => invoke<void>("use_direct_relay"),
+
+    startLocalRelay: () => invoke<LocalRelayStatus>("start_local_relay"),
+
+    stopLocalRelay: () => invoke<LocalRelayStatus>("stop_local_relay"),
+
+    localRelayStatus: () => invoke<LocalRelayStatus>("local_relay_status"),
 
     securityDetails: async () => {
       const d = await invoke<WireSecurityDetails>("security_details");

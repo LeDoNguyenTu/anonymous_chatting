@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  SPEC §2.2: this app requests INTERNET and nothing else.
+
+  No contacts, no phone state, no location, no advertising ID, no external
+  storage. A messenger that reads the address book is a messenger with a social
+  graph on a server; there is no server-side account here for one to attach to,
+  and the permission would exist only to make onboarding smoother.
+
+  Camera and media permissions are *not* declared here even though attachments
+  exist (Phase 3). Picking an image goes through the system photo picker, which
+  hands back a single URI the user chose and needs no permission at all — so
+  the app never gains the ability to read the gallery, only to receive what was
+  handed to it. That is a real difference to the person granting it, not a
+  technicality: a denied permission cannot leak, and a permission never
+  requested cannot be granted by accident.
+
+  android:allowBackup="false" is deliberate and load-bearing. Android's
+  auto-backup would copy the app's private directory — including the SQLCipher
+  database and the sidecar that says how it is keyed — to Google Drive. SPEC
+  §7.3 says backups are user-held and this project has no server-side backup
+  feature at all; leaving the platform default on would have quietly created
+  one.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <application
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="false"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Pouch">
+        <!--
+          No android:icon. The system default is used until a real one exists.
+          A placeholder icon committed now would ship in a release APK looking
+          deliberate.
+        -->
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:configChanges="orientation|screenSize|keyboardHidden|uiMode"
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@style/Theme.Pouch">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+
+</manifest>

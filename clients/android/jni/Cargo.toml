@@ -1,0 +1,100 @@
+[package]
+name = "pouch-jni"
+description = "Pouch Android bridge. Exposes pouch-core to Kotlin across JNI."
+version = "0.1.7"
+edition = "2021"
+rust-version = "1.89"
+license = "AGPL-3.0-or-later"
+authors = ["Le Do Nguyen Tu"]
+
+# Not a workspace member: it cross-compiles to Android ABIs with the NDK
+# toolchain, which no other job installs, and `cargo build --workspace` on a
+# desktop machine has no reason to build it.
+#
+# Because it is outside the workspace it needs its own Cargo.lock, and that
+# lock file is committed. Exact pins on direct dependencies do not constrain
+# the graph beneath them — only a lock file does. This is the case D-029
+# named in advance: "the Android JNI library in Phase 5 is the next one".
+#
+# The empty [workspace] table below stops Cargo's upward directory search at
+# this crate unconditionally, for the same nested-git-worktree reason spelled
+# out in clients/desktop/src-tauri/Cargo.toml.
+[workspace]
+resolver = "2"
+
+[lib]
+# `cdylib` is what System.loadLibrary() dlopen()s on the device.
+#
+# `rlib` alongside it is what lets `cargo test` build this crate as an ordinary
+# library on the host. Without it the test harness has nothing to link against
+# and every test below would be unrunnable on any machine that is not Android
+# — which would mean the only verification of this crate was that it compiles.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pouch-core = { path = "../../../core" }
+serde = { version = "=1.0.225", features = ["derive"] }
+serde_json = "=1.0.134"
+# Same exact pins the workspace already uses (root Cargo.toml). This crate sits
+# outside the workspace, so it needs its own copies rather than inheriting.
+tokio = { version = "=1.53.1", features = ["rt-multi-thread", "sync"] }
+thiserror = "=2.0.19"
+
+# The JNI boundary itself. 0.21 is the release whose entry-point signatures take
+# `JNIEnv` by value rather than by raw pointer, which is why nothing in this
+# crate needs an `unsafe` block to be callable from the JVM.
+jni = "=0.21.1"
+
+# Routes Rust's `log` output to logcat. Nothing in this crate logs message
+# content, contact identifiers, or key material — see the guardrail in
+# scripts/check-guardrails.sh, which fails the build on that.
+android_logger = "=0.14.1"
+log = "=0.4.22"
+
+[dev-dependencies]
+tempfile = "=3.14.0"
+
+[lints.rust]
+# `deny`, not `forbid`, and the difference is deliberate.
+#
+# Every other crate in this project forbids unsafe outright. This one cannot:
+# a JNI entry point has to be `#[no_mangle]` so the JVM can find it by name,
+# and the compiler treats `#[no_mangle]` as unsafe because two libraries
+# exporting the same symbol is undefined behaviour at link time. `forbid`
+# cannot be overridden anywhere, so it would make an FFI library impossible to
+# write rather than making it safer.
+#
+# `deny` keeps the same rule everywhere except the two places that carry an
+# explicit `#[allow(unsafe_code)]` with a reason: the two exported entry points
+# in lib.rs. There is no `unsafe` *block* anywhere in this crate — nothing here
+# dereferences a raw pointer — because the `jni` crate's entry-point signatures
+# are safe. If a change appears to need an `unsafe` block, that is a signal the
+# boundary is being crossed the wrong way, not a lint to relax.
+unsafe_code = "deny"
+missing_docs = "warn"
+
+# Cross-compiling SQLCipher for Android.
+#
+# `rusqlite`'s `bundled-sqlcipher` feature — which the workspace selects, and
+# which reaches this crate through pouch-core — compiles SQLCipher from source
+# but links the *host's* OpenSSL for its crypto. There is no host OpenSSL for
+# an Android target, so that configuration fails at link time on exactly the
+# builds this crate exists to produce.
+#
+# `bundled-sqlcipher-vendored-openssl` builds OpenSSL from source too, for
+# whichever target is being compiled.
+#
+# Scoped to Android rather than named as an ordinary dependency, because Cargo
+# features are additive: unconditionally it would also apply when this crate is
+# built and tested on a developer's machine, where compiling OpenSSL from
+# source is unnecessary and adds build-time prerequisites (perl, nasm) that
+# nothing else in this project needs. `resolver = "2"` above is what makes the
+# scoping real — under the v1 resolver, target-specific features leak into
+# every target.
+#
+# Not a cryptographic change: the same SQLCipher, the same AES-256, sourced
+# differently. A build-configuration decision, recorded as D-047.
+[target.'cfg(target_os = "android")'.dependencies]
+rusqlite = { version = "=0.39.0", features = [
+    "bundled-sqlcipher-vendored-openssl",
+] }

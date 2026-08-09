@@ -43,14 +43,24 @@ with it, say so and quote the section.
 - **`docs/DECISIONS.md` is append-only.** Supersede, never edit away.
 - **Update `docs/PROGRESS.md` before finishing a session.**
 - **Bump the version number after each phase or each critical fix** — project
-  owner instruction, 2026-08-02. Four places have to move together: root
+  owner instruction, 2026-08-02. **Six** places have to move together: root
   `Cargo.toml`'s `[workspace.package] version` (covers `core`, `server`,
   `clients/cli`), `clients/desktop/src-tauri/Cargo.toml`'s own `version`
-  (outside the workspace, not inherited), `clients/desktop/src-tauri/tauri.conf.json`'s
-  `version`, and `clients/desktop/package.json`'s `version`. `SecurityDetailsView.app_version`
-  reads `env!("CARGO_PKG_VERSION")` from the desktop crate's own `Cargo.toml`
-  at compile time, which is why that one has to move even though it is not
-  part of the workspace.
+  (outside the workspace, not inherited),
+  `clients/desktop/src-tauri/tauri.conf.json`'s `version`,
+  `clients/desktop/package.json`'s `version`, and — from Phase 5 —
+  `clients/android/jni/Cargo.toml`'s `version` (also outside the workspace) and
+  `clients/android/app/build.gradle.kts`'s `versionName`.
+  An earlier version of this list said there were four and explained that
+  `SecurityDetailsView.app_version` reads `env!("CARGO_PKG_VERSION")` from the
+  *desktop* crate. That explanation was wrong. The macro is invoked in
+  `core/src/api/mod.rs`, so it expands to the **core** crate's version — the
+  workspace one. The desktop and Android versions still have to move, because
+  they are what the installer, the APK, and the store listing report, but they
+  are not where the Security details screen gets its number.
+- **`pouch_core::SPEC_PHASE` moves when a phase closes.** It sat at `2` through
+  the whole of Phases 3 and 4 because nothing referenced it and nothing forced
+  it. Under-claiming never breaks a test, which is exactly why it rots.
 - The UI layer never touches a key, a cipher, or a raw ciphertext blob. If a
   client seems to need one, the core is missing an operation — add it to
   `core/src/api.rs` rather than reaching around it.
@@ -177,12 +187,51 @@ as a gap. SPEC does not specify its shape, and cover traffic an observer can
 distinguish from real traffic is worse than none. It needs a design decision
 from the project owner before anyone implements it.
 
-The work is on branch `phase-4-tor-sealed-sender` (worktree
-`.worktrees/phase-4-tor/`, pushed to origin), **not yet merged to
-`develop`**.
+**Phase 5 (Android client) is under way and does not meet its exit criteria.**
+Its exit needs a signed APK installed on a physical device exchanging messages
+with a desktop client, and no device, emulator, Android SDK, NDK, Gradle, or
+AGP-compatible JDK exists in the environment this was built in. That shaped the
+work rather than being worked around: it was built bottom-up, so that the
+layer which *can* be verified was verified, and the layer which cannot was made
+as small as possible.
 
-177 Rust tests and 44 frontend tests pass, verified locally on Windows, with
-CI green on the branch. **Nothing that touches a screen has ever been seen in
+- `clients/android/jni/` — a `cdylib` bridging Kotlin to `pouch-core`, with its
+  own committed `Cargo.lock` (the case D-029 named in advance). The whole JNI
+  surface is **two exported functions** (D-048), not one per operation: every
+  decision lives in `session.rs`, which has no `jni` types in it and runs under
+  `cargo test` on any machine. **11 tests pass on Windows.** They cover what
+  would otherwise only surface on a phone — an unlisted operation refused
+  rather than forwarded, thirteen operations reporting `NotOpen` instead of
+  panicking (a panic across FFI is undefined behaviour), a retention typo
+  refused rather than silently selecting a policy that deletes messages.
+- `clients/android/app/` — Gradle, Kotlin, Compose. `Pouch.kt` is a typed
+  facade with one suspend function per operation and no passthrough, the same
+  discipline `bridge.ts` has. The manifest requests `INTERNET` and nothing
+  else, and CI checks the **merged** manifest, since a permission can arrive
+  from a library during merge. `allowBackup="false"` plus explicit
+  `data_extraction_rules`, because the platform default would have copied the
+  SQLCipher database and its keying sidecar to Google Drive.
+- Two CI jobs do the verifying: `android-bridge` (fmt, clippy, host tests,
+  `cargo audit` on its own lock, then a four-ABI cross-compile that checks four
+  `.so` files exist rather than trusting an exit code) and `android-app`
+  (JVM unit tests, lint, assemble, merged-manifest permission check).
+
+**Only the foundation is built.** The conversation view, add contact, safety
+number, privacy and storage, security details, transport settings, backup and
+restore, and the identity-change modal are **not written** for Android — the
+desktop client has all of them. The app says so on its own empty state rather
+than looking finished. Android Keystore is still not implemented (D-035), so
+this client uses the same device-file key placeholder as the desktop one, and
+the threat model now says that plainly in both §1 and §3.
+
+Phase 5 also produced a change that is not Android at all: **the ten client
+view shapes moved into `core/src/views.rs` (D-046)**, because the Android
+client needed the same ones the desktop client had defined privately, and two
+hand-maintained copies of structures carrying security state drift silently.
+
+191 Rust tests (180 workspace + 11 in the Android bridge) and 44 frontend
+tests pass, verified locally on Windows. Phase 4 was merged to `develop` by
+the project owner via PR #3. **Nothing that touches a screen has ever been seen in
 a running window** — this environment cannot launch the Tauri shell — so
 "verified" for the Transport settings screen, the backup screen, and the
 attachment UI means build, typecheck, and `renderToStaticMarkup` assertions
@@ -198,7 +247,8 @@ One open watch item: `two_clients_exchange_text_and_the_relay_learns_nothing`
 failed once during Phase 4 and never reproduced. If CI hits it, capture the
 assertion text before doing anything else.
 
-The version number is `0.1.3` — bump it after each phase or critical fix
+The version number is `0.1.4`, which marks **Phase 5 in progress**, not
+Phase 5 complete — bump it after each phase or critical fix
 (project owner instruction, see the conventions list above for the four
 files that have to move together).
 
@@ -289,13 +339,23 @@ Each of these cost real debugging time. They are in `docs/DECISIONS.md` in full.
 
 Worth knowing before spending time on it:
 
-- **The Tauri crate does not compile here** — no GTK or WebKitGTK. Write it,
-  push it, and read the `Tauri shell — build` CI job. Assumptions it depends on
-  should be asserted in `core`, which builds everywhere.
+- **The Tauri crate does compile here** — this line previously said it did not,
+  which was wrong, and wrong in the expensive direction: it sent every desktop
+  change through a CI round trip that was never necessary. The GTK and
+  WebKitGTK dependency is a *Linux* one; on Windows Tauri uses WebView2, which
+  is present. `cargo check --locked --release` in
+  `clients/desktop/src-tauri` succeeds in about a minute, and `npx tauri build`
+  produces a real installer. The `Tauri shell — build` CI job is still the one
+  that proves the Linux build, which this machine genuinely cannot do.
 - **Branch deletion is blocked** — the git proxy returns 403 on a delete
   refspec. Pushes work; deletes do not.
 - **The GUI cannot be run**, so the frontend's honesty rules are tested through
   `renderToStaticMarkup` and a fake bridge rather than a browser.
+- **Nothing Android can be built here at all.** No Android SDK, no NDK, no
+  Gradle, no `cargo-ndk`, no Android Rust target, and the installed JDK is 24
+  where AGP 8.7 supports 17–21. The JNI crate's *host* build and its 11 tests
+  do run on Windows; everything else about the Android client is verified by
+  the two CI jobs or not at all. There is no emulator and no device.
 
 ## Two constraints that shape design decisions
 

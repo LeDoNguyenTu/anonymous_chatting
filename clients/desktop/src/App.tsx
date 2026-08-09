@@ -16,6 +16,7 @@ import { ConversationList } from "./screens/ConversationList";
 import { FirstRun } from "./screens/FirstRun";
 import { PrivacyStorage } from "./screens/PrivacyStorage";
 import { TransportSettings } from "./screens/TransportSettings";
+import { RelayHosting } from "./screens/RelayHosting";
 import { SafetyNumber } from "./screens/SafetyNumber";
 import { SecurityDetails } from "./screens/SecurityDetails";
 import {
@@ -35,6 +36,7 @@ type Route =
   | { name: "add-contact" }
   | { name: "privacy" }
   | { name: "transport" }
+  | { name: "hosting" }
   | { name: "security" }
   | { name: "backup-export" }
   | { name: "backup-import" };
@@ -177,11 +179,19 @@ export default function App({ bridge: injected }: { bridge?: PouchBridge } = {})
           onWiped={() => setRoute({ name: "first-run" })}
           onExportBackup={() => setRoute({ name: "backup-export" })}
           onTransportSettings={() => setRoute({ name: "transport" })}
+          onRelayHosting={() => setRoute({ name: "hosting" })}
         />
       )}
 
       {route.name === "transport" && (
         <TransportSettings
+          bridge={bridge}
+          onBack={() => setRoute({ name: "privacy" })}
+        />
+      )}
+
+      {route.name === "hosting" && (
+        <RelayHosting
           bridge={bridge}
           onBack={() => setRoute({ name: "privacy" })}
         />

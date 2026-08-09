@@ -6,130 +6,37 @@
 //! appears to need something lower level, the answer is a new operation on
 //! `Pouch`, not a new command that reaches past it.
 //!
+//! The shapes these commands return live in `pouch_core::views`, not here.
+//! They were defined in this file until Phase 5, when the Android client
+//! needed the same ones: SPEC §9 requires it to mirror the desktop feature
+//! set, and two hand-maintained copies of a structure carrying security state
+//! drift silently (D-046). This file converts and returns; it no longer
+//! defines.
+//!
 //! Errors come back as strings because that is what the webview renders. They
 //! are the `Display` text of the core's own error types, which SPEC §6.9
 //! requires to say what happened and what to do — so the UI can show them
 //! directly rather than inventing its own wording.
 
 use pouch_core::{
-    ConversationSummary, IdentityState, Message, Pouch, RetentionPolicy, SecurityDetails,
+    backup_file_name, AttachmentView, ConversationView, ExportBackupView, IdentityChangeView,
+    IdentityState, ImportBackupView, MessageView, Pouch, RelayVisibilityView, RetentionPolicy,
+    SecurityDetailsView, SendResult, TransportOptionView,
 };
-use serde::Serialize;
 use tauri::{Manager, State};
 
+use crate::relay_process::{LocalRelay, LocalRelayStatus};
+
 use crate::state::{database_path, relay_config, AppState};
-
-/// A conversation, flattened for the webview.
-#[derive(Serialize)]
-pub struct ConversationView {
-    pub id: String,
-    pub contact_id: String,
-    pub contact_name: String,
-    /// `VERIFIED` / `UNVERIFIED` / `KEY CHANGED` — the Custody Strip label.
-    pub identity: String,
-    pub last_message: Option<String>,
-}
-
-impl From<ConversationSummary> for ConversationView {
-    fn from(s: ConversationSummary) -> Self {
-        Self {
-            id: s.id,
-            contact_id: s.contact_id,
-            contact_name: s.contact_name,
-            identity: s.identity.label().to_string(),
-            last_message: s.last_message,
-        }
-    }
-}
-
-/// A message, flattened for the webview.
-#[derive(Serialize)]
-pub struct MessageView {
-    pub id: String,
-    pub outgoing: bool,
-    pub body: String,
-    pub at: u64,
-}
-
-impl From<Message> for MessageView {
-    fn from(m: Message) -> Self {
-        Self {
-            id: m.id,
-            outgoing: m.outgoing,
-            body: m.body,
-            at: m.at,
-        }
-    }
-}
-
-/// One row of a message manifest.
-#[derive(Serialize)]
-pub struct ManifestRow {
-    pub number: u8,
-    pub label: String,
-    pub detail: String,
-    pub ran: bool,
-}
-
-/// What a send produced.
-#[derive(Serialize)]
-pub struct SendResult {
-    pub summary: String,
-    pub rows: Vec<ManifestRow>,
-    pub failed: bool,
-}
-
-/// What the relay could see about a message (SPEC §6.5.4).
-#[derive(Serialize)]
-pub struct RelayVisibilityView {
-    pub inbox_id: String,
-    pub blob_size: usize,
-    pub visible: Vec<String>,
-    pub not_visible: Vec<String>,
-    pub still_inferable: Vec<String>,
-}
-
-/// Every mechanism in use, for the Security details screen.
-#[derive(Serialize)]
-pub struct SecurityDetailsView {
-    pub ciphersuite: String,
-    pub aead: String,
-    pub key_agreement: String,
-    pub signature: String,
-    pub kdf: String,
-    pub protocol: String,
-    pub local_database: String,
-    pub passphrase_derivation: String,
-    pub transport: String,
-    pub relay_address: String,
-    pub openmls_version: String,
-    pub app_version: String,
-}
-
-impl From<SecurityDetails> for SecurityDetailsView {
-    fn from(d: SecurityDetails) -> Self {
-        Self {
-            ciphersuite: d.ciphersuite.into(),
-            aead: d.aead.into(),
-            key_agreement: d.key_agreement.into(),
-            signature: d.signature.into(),
-            kdf: d.kdf.into(),
-            protocol: d.protocol.into(),
-            local_database: d.local_database.into(),
-            passphrase_derivation: d.passphrase_derivation.into(),
-            transport: d.transport.into(),
-            relay_address: d.relay_address,
-            openmls_version: d.openmls_version.into(),
-            app_version: d.app_version.into(),
-        }
-    }
-}
 
 /// Whether this device already holds an identity.
 ///
 /// Decides whether the app opens on first run or on the conversation list.
 #[tauri::command]
-pub async fn has_identity(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<bool, String> {
+pub async fn has_identity(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<bool, String> {
     if state.is_open().await {
         return Ok(true);
     }
@@ -169,7 +76,10 @@ pub async fn create_identity(
 
 /// Opens the identity already on this device.
 #[tauri::command]
-pub async fn open_identity(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+pub async fn open_identity(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
     if state.is_open().await {
         return Ok(());
     }
@@ -257,20 +167,7 @@ pub async fn send_message(
         .await
         .map_err(|e| e.to_string())?;
 
-    Ok(SendResult {
-        summary: manifest.summary(),
-        rows: manifest
-            .stages()
-            .iter()
-            .map(|(stage, outcome)| ManifestRow {
-                number: stage.number(),
-                label: stage.label().to_string(),
-                detail: outcome.detail(),
-                ran: outcome.ran(),
-            })
-            .collect(),
-        failed: manifest.failure().is_some(),
-    })
+    Ok(SendResult::from(&manifest))
 }
 
 /// Collects and decrypts anything waiting.
@@ -308,7 +205,10 @@ pub async fn verify_contact(
     verified: bool,
 ) -> Result<(), String> {
     state
-        .with(|p| p.verify_contact(&contact_id, verified).map_err(|e| e.to_string()))
+        .with(|p| {
+            p.verify_contact(&contact_id, verified)
+                .map_err(|e| e.to_string())
+        })
         .await
 }
 
@@ -324,19 +224,6 @@ pub async fn transport_state(state: State<'_, AppState>) -> Result<String, Strin
 
 /* -- transport settings (SPEC §6.7.9) -------------------------------------- */
 
-/// One transport the user can choose.
-///
-/// `route` is the token the Custody Strip and `transport_state` already use,
-/// so the screen can tell which option is active by comparing strings rather
-/// than by keeping a parallel notion of the same thing. `name` is the same
-/// route written as a title, and `explanation` is the core's own copy.
-#[derive(Serialize)]
-pub struct TransportOptionView {
-    pub route: String,
-    pub name: String,
-    pub explanation: String,
-}
-
 /// The transports the settings screen offers.
 ///
 /// `Offline` is not among them. It is a state the client reports when it
@@ -349,16 +236,7 @@ pub struct TransportOptionView {
 /// is the user's.
 #[tauri::command]
 pub fn transport_options() -> Vec<TransportOptionView> {
-    use pouch_core::transport::Route;
-
-    [Route::Direct, Route::Tor]
-        .iter()
-        .map(|r| TransportOptionView {
-            route: r.label().to_string(),
-            name: r.name().to_string(),
-            explanation: r.explanation().to_string(),
-        })
-        .collect()
+    TransportOptionView::selectable()
 }
 
 /// Switches this device to a Tor-routed relay connection.
@@ -374,8 +252,7 @@ pub fn transport_options() -> Vec<TransportOptionView> {
 pub async fn connect_tor(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     let dir = app_data_dir(&app)?;
     let config = crate::state::tor_config(&dir).ok_or_else(|| {
-        "No Tor relay address is configured for this build, so Tor cannot be used yet."
-            .to_string()
+        "No Tor relay address is configured for this build, so Tor cannot be used yet.".to_string()
     })?;
 
     let mut guard = state.lock().await;
@@ -392,7 +269,10 @@ pub async fn connect_tor(app: tauri::AppHandle, state: State<'_, AppState>) -> R
 #[tauri::command]
 pub async fn use_direct_relay(state: State<'_, AppState>) -> Result<(), String> {
     state
-        .with(|p| p.use_direct_relay(relay_config()).map_err(|e| e.to_string()))
+        .with(|p| {
+            p.use_direct_relay(relay_config())
+                .map_err(|e| e.to_string())
+        })
         .await
 }
 
@@ -412,14 +292,7 @@ pub async fn relay_visibility(
 
     state
         .with(|p| {
-            let v = RelayVisibility::for_message(p.inbox_id(), blob_size, p.current_route());
-            Ok(RelayVisibilityView {
-                inbox_id: v.inbox_id,
-                blob_size: v.blob_size,
-                visible: v.visible.into_iter().map(String::from).collect(),
-                not_visible: v.not_visible.into_iter().map(String::from).collect(),
-                still_inferable: v.still_inferable.into_iter().map(String::from).collect(),
-            })
+            Ok(RelayVisibility::for_message(p.inbox_id(), blob_size, p.current_route()).into())
         })
         .await
 }
@@ -427,26 +300,15 @@ pub async fn relay_visibility(
 /// Destroys everything on this device.
 #[tauri::command]
 pub async fn wipe_all(state: State<'_, AppState>) -> Result<(), String> {
-    state.with(|p| p.wipe_all().map_err(|e| e.to_string())).await
+    state
+        .with(|p| p.wipe_all().map_err(|e| e.to_string()))
+        .await
 }
 
 /* -- Phase 3 (via D-037): backup export / import (SPEC §6.7.10) ------------ */
 
 /// What the export screen shows and offers for download.
 ///
-/// The recovery key is generated here, once, and this is the only time it
-/// exists outside the user's own record of it — nothing in this project
-/// stores it. `backup` travels to the webview as plain bytes rather than a
-/// written file because this process has no file-save dialog; the screen
-/// turns it into a download itself (SPEC §7.3: "the user places where they
-/// choose").
-#[derive(Serialize)]
-pub struct ExportBackupView {
-    pub recovery_key_hex: String,
-    pub backup: Vec<u8>,
-    pub file_name: String,
-}
-
 /// Encrypts everything this device holds into a portable backup.
 #[tauri::command]
 pub async fn export_backup(state: State<'_, AppState>) -> Result<ExportBackupView, String> {
@@ -457,17 +319,10 @@ pub async fn export_backup(state: State<'_, AppState>) -> Result<ExportBackupVie
             Ok(ExportBackupView {
                 recovery_key_hex: hex::encode(&recovery_key),
                 backup,
-                file_name: format!("pouch-backup-{}.pouchbk", unix_seconds()),
+                file_name: backup_file_name(),
             })
         })
         .await
-}
-
-/// What the import screen reports once a restore succeeds.
-#[derive(Serialize)]
-pub struct ImportBackupView {
-    pub display_name: String,
-    pub conversation_count: usize,
 }
 
 /// Restores a backup onto this device, as a fresh identity.
@@ -491,8 +346,9 @@ pub async fn import_backup(
         );
     }
 
-    let recovery_key = hex::decode(recovery_key_hex.trim())
-        .map_err(|_| "That recovery key isn't valid hex — check you copied all of it.".to_string())?;
+    let recovery_key = hex::decode(recovery_key_hex.trim()).map_err(|_| {
+        "That recovery key isn't valid hex — check you copied all of it.".to_string()
+    })?;
 
     let path = db_path(&app)?;
     if let Some(parent) = path.parent() {
@@ -541,27 +397,7 @@ pub async fn send_attachment(
         .await
         .map_err(|e| e.to_string())?;
 
-    Ok(SendResult {
-        summary: manifest.summary(),
-        rows: manifest
-            .stages()
-            .iter()
-            .map(|(stage, outcome)| ManifestRow {
-                number: stage.number(),
-                label: stage.label().to_string(),
-                detail: outcome.detail(),
-                ran: outcome.ran(),
-            })
-            .collect(),
-        failed: manifest.failure().is_some(),
-    })
-}
-
-/// What the conversation view needs to render a stored attachment.
-#[derive(Serialize)]
-pub struct AttachmentView {
-    pub filename: String,
-    pub content: Vec<u8>,
+    Ok(SendResult::from(&manifest))
 }
 
 /// The stripped content of a sent or received attachment, if `message_id`
@@ -580,24 +416,7 @@ pub async fn attachment(
         .await
 }
 
-/// Seconds since the epoch, for a backup file name that sorts and does not
-/// collide across exports in the same session.
-fn unix_seconds() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
-
 /* -- Phase 2: the storage controls (SPEC §6.7.7) --------------------------- */
-
-/// A contact's identity key having changed, flattened for the webview.
-#[derive(Serialize)]
-pub struct IdentityChangeView {
-    pub contact_id: String,
-    pub contact_name: String,
-    pub changed_at: u64,
-}
 
 /// How long this device keeps messages: `forever` / `30d` / `7d` / `24h`.
 #[tauri::command]
@@ -672,15 +491,7 @@ pub async fn identity_changes(
     state
         .with(|p| {
             p.identity_changes()
-                .map(|list| {
-                    list.into_iter()
-                        .map(|c| IdentityChangeView {
-                            contact_id: c.contact_id,
-                            contact_name: c.contact_name,
-                            changed_at: c.changed_at,
-                        })
-                        .collect()
-                })
+                .map(|list| list.into_iter().map(Into::into).collect())
                 .map_err(|e| e.to_string())
         })
         .await
@@ -713,10 +524,7 @@ pub async fn is_passphrase_protected(state: State<'_, AppState>) -> Result<bool,
 
 /// Protects this device with a passphrase, re-encrypting the database.
 #[tauri::command]
-pub async fn set_passphrase(
-    state: State<'_, AppState>,
-    passphrase: String,
-) -> Result<(), String> {
+pub async fn set_passphrase(state: State<'_, AppState>, passphrase: String) -> Result<(), String> {
     if passphrase.trim().is_empty() {
         return Err("An empty passphrase protects nothing.".to_string());
     }
@@ -823,4 +631,46 @@ fn device_key(app: &tauri::AppHandle) -> Result<Vec<u8>, String> {
 
     let dir = app_data_dir(app)?;
     development_device_key(&dir.join("device.key")).map_err(|e| e.to_string())
+}
+
+/* -- the relay that ships in this installer (D-051) ------------------------- */
+
+/// Starts the bundled relay so other people can reach this device.
+///
+/// Not called on launch. Hosting a relay means publishing an onion service and
+/// accepting inbound traffic for as long as the window is open, which is a
+/// choice rather than a default — see `relay_process` for the reasoning.
+///
+/// Returns as soon as the process is spawned, not when the onion service is
+/// published: publishing takes tens of seconds, and blocking the window for
+/// that long would look like a hang. The returned status carries
+/// `onionAddress: null` until it appears, and the screen must show that as
+/// "starting" rather than as failure.
+#[tauri::command]
+pub async fn start_local_relay(
+    app: tauri::AppHandle,
+    relay: State<'_, LocalRelay>,
+) -> Result<LocalRelayStatus, String> {
+    let dir = app_data_dir(&app)?;
+    relay.start(dir)
+}
+
+/// Stops the bundled relay.
+///
+/// Anyone reaching this device through its onion address loses that route.
+/// Blobs already accepted stay in the relay's database until their TTL expires
+/// — stopping is not erasure, and the UI says so rather than implying it.
+#[tauri::command]
+pub async fn stop_local_relay(relay: State<'_, LocalRelay>) -> Result<LocalRelayStatus, String> {
+    relay.stop()
+}
+
+/// What the bundled relay is doing right now.
+///
+/// Polled by the hosting screen. Re-checks the process rather than replaying
+/// the last thing it was told, so a relay that died mid-bootstrap reports as
+/// stopped instead of reporting "starting" forever.
+#[tauri::command]
+pub async fn local_relay_status(relay: State<'_, LocalRelay>) -> Result<LocalRelayStatus, String> {
+    relay.status()
 }

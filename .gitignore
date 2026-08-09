@@ -10,3 +10,22 @@ clients/desktop/src-tauri/gen/
 *.sqlite
 *.sqlite3
 .DS_Store
+
+# The Gradle wrapper jar is a binary. CI uses gradle/actions/setup-gradle,
+# which provides Gradle itself, so the wrapper is not needed to build here.
+clients/android/gradle/wrapper/
+
+# Cross-compiled Rust libraries, produced by cargo-ndk into the APK's jniLibs.
+# Build outputs, not source — and four .so files with a bundled OpenSSL and
+# SQLCipher inside are tens of megabytes each.
+clients/android/app/src/main/jniLibs/
+
+# Release signing. The keystore and its passwords are the project owner's and
+# belong nowhere near the repository.
+clients/android/keystore.properties
+*.jks
+*.keystore
+
+# The relay binary, copied here by the build so Tauri can bundle it as a
+# sidecar. A build output with a target triple in its name, not source.
+clients/desktop/src-tauri/binaries/
