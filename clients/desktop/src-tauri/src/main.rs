@@ -9,13 +9,16 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
+mod relay_process;
 mod state;
 
+use relay_process::LocalRelay;
 use state::AppState;
 
 fn main() {
     tauri::Builder::default()
         .manage(AppState::default())
+        .manage(LocalRelay::default())
         .invoke_handler(tauri::generate_handler![
             commands::has_identity,
             commands::create_identity,
@@ -52,6 +55,9 @@ fn main() {
             commands::import_backup,
             commands::send_attachment,
             commands::attachment,
+            commands::start_local_relay,
+            commands::stop_local_relay,
+            commands::local_relay_status,
         ])
         .run(tauri::generate_context!())
         .expect("failed to start the Pouch window");

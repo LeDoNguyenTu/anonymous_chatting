@@ -34,12 +34,29 @@ android {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64", "x86")
         }
 
-        // Where the relay lives for a debug build. 10.0.2.2 is the emulator's
-        // route to the host machine's loopback, which is where the development
-        // relay runs. Not a user preference: a client that can be pointed at an
-        // arbitrary address is a client that can be talked into pointing at
-        // someone else's relay (the same reasoning state.rs applies on desktop).
-        buildConfigField("String", "RELAY_URL", "\"http://10.0.2.2:8443\"")
+        // Where the relay lives, fixed at build time.
+        //
+        // Deliberately **not** a user preference and deliberately not settable
+        // from the running app: a client that can be pointed at an arbitrary
+        // relay from its own interface is a client that can be talked into it.
+        // Pointing at the wrong relay does not expose message content — the
+        // relay never holds a key — but it hands that operator the inbox
+        // identifiers and connection timing THREAT_MODEL.md §5 lists as
+        // visible, and it silently breaks delivery. Same boundary
+        // RelayConfig::from_env draws on desktop (D-049).
+        //
+        // The default is 10.0.2.2:8443, the emulator's route to the host
+        // machine's loopback, which is where a development relay runs. A build
+        // meant for a real phone must override it — an emulator address is
+        // unreachable from a handset, and the app will simply queue everything:
+        //
+        //   gradle :app:assembleRelease -PpouchRelayUrl=https://relay.example:8443
+        //
+        // Over Tor, pass the onion address instead. There is no fallback if it
+        // is wrong, by design.
+        val relayUrl = (findProperty("pouchRelayUrl") as String?)
+            ?: "http://10.0.2.2:8443"
+        buildConfigField("String", "RELAY_URL", "\"$relayUrl\"")
     }
 
     buildFeatures {
@@ -47,9 +64,50 @@ android {
         buildConfig = true
     }
 
+    // Signing.
+    //
+    // A release keystore is the project owner's to hold, so none is committed
+    // and none is generated in CI. What *is* here is the wiring, so signing is
+    // one properties file away rather than a research task.
+    //
+    // Set these in `clients/android/keystore.properties` (gitignored) to sign
+    // locally:
+    //
+    //   storeFile=/absolute/path/pouch-release.jks
+    //   storePassword=...
+    //   keyAlias=pouch
+    //   keyPassword=...
+    //
+    // Generate one with:
+    //   keytool -genkeypair -v -keystore pouch-release.jks -alias pouch \
+    //           -keyalg RSA -keysize 4096 -validity 10000
+    //
+    // Losing this file means Play will not accept another update of this app,
+    // ever. Back it up somewhere you would not lose a passport.
+    val keystoreProperties = java.util.Properties().apply {
+        val file = rootProject.file("keystore.properties")
+        if (file.exists()) file.inputStream().use { load(it) }
+    }
+
+    signingConfigs {
+        if (keystoreProperties.containsKey("storeFile")) {
+            create("release") {
+                storeFile = file(keystoreProperties.getProperty("storeFile"))
+                storePassword = keystoreProperties.getProperty("storePassword")
+                keyAlias = keystoreProperties.getProperty("keyAlias")
+                keyPassword = keystoreProperties.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         debug {
             isMinifyEnabled = false
+            // Suffixed so a debug build installs alongside a release one rather
+            // than one silently replacing the other — and so a sideloaded test
+            // build cannot be mistaken for the real thing.
+            applicationIdSuffix = ".debug"
+            versionNameSuffix = "-debug"
         }
         release {
             isMinifyEnabled = true
@@ -57,11 +115,11 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
-            // Deliberately unsigned here. A release keystore is the project
-            // owner's to hold, and committing signing config — or generating a
-            // key in CI — would put the app's identity somewhere it does not
-            // belong. `assembleRelease` produces an unsigned APK; signing is a
-            // separate, manual step.
+            // Signed only when keystore.properties exists. Without it this
+            // produces an unsigned APK, which is correct: it cannot be
+            // installed, and that is better than being signed by a key that
+            // was generated somewhere it should not have been.
+            signingConfig = signingConfigs.findByName("release")
         }
     }
 
@@ -124,6 +182,11 @@ val nativeLibsPresent by tasks.registering {
     }
 }
 
-tasks.matching { it.name == "assembleRelease" }.configureEach {
-    dependsOn(nativeLibsPresent)
-}
+// bundleRelease as well as assembleRelease. The AAB is what goes to Play, and
+// it is the artifact where a missing ABI is least visible — Play splits the
+// bundle per device, so an absent arm64 library would produce installs that
+// crash on launch for most of the world while the x86 emulator here looked fine.
+tasks.matching { it.name == "assembleRelease" || it.name == "bundleRelease" }
+    .configureEach {
+        dependsOn(nativeLibsPresent)
+    }

@@ -30,7 +30,12 @@ internal object PouchNative {
         System.loadLibrary("pouch_jni")
     }
 
-    external fun nativeStart(dbPath: String, torStateDir: String, relayUrl: String)
+    external fun nativeStart(
+        dbPath: String,
+        torStateDir: String,
+        relayUrl: String,
+        onionHost: String,
+    )
 
     external fun nativeCall(operation: String, argsJson: String): String
 }
@@ -71,10 +76,14 @@ object Pouch {
      * for encrypting the database — a rooted device or an adb backup reads it
      * regardless, which is why SQLCipher is underneath.
      */
-    suspend fun start(dbPath: String, torStateDir: String, relayUrl: String) =
-        withContext(Dispatchers.IO) {
-            PouchNative.nativeStart(dbPath, torStateDir, relayUrl)
-        }
+    suspend fun start(
+        dbPath: String,
+        torStateDir: String,
+        relayUrl: String,
+        onionHost: String,
+    ) = withContext(Dispatchers.IO) {
+        PouchNative.nativeStart(dbPath, torStateDir, relayUrl, onionHost)
+    }
 
     /* -- identity --------------------------------------------------------- */
 

@@ -26,6 +26,7 @@ interface PrivacyStorageProps {
   onWiped: () => void;
   onExportBackup: () => void;
   onTransportSettings: () => void;
+  onRelayHosting: () => void;
 }
 
 export function PrivacyStorage({
@@ -34,6 +35,7 @@ export function PrivacyStorage({
   onWiped,
   onExportBackup,
   onTransportSettings,
+  onRelayHosting,
 }: PrivacyStorageProps) {
   const [choices, setChoices] = useState<RetentionChoice[]>([]);
   const [policy, setPolicy] = useState<RetentionValue | null>(null);
@@ -249,6 +251,19 @@ export function PrivacyStorage({
           onClick={onTransportSettings}
         >
           Transport settings
+        </button>
+      </section>
+
+      {/* -- hosting ---------------------------------------------------------- */}
+      <section className="panel">
+        <h2 className="panel__h">Host a relay</h2>
+        <p className="panel__note">
+          A relay ships with Pouch. Running it here gives you an address to hand
+          to somebody else, so neither of you needs a server or anybody
+          else&apos;s relay.
+        </p>
+        <button type="button" className="button-quiet" onClick={onRelayHosting}>
+          Hosting
         </button>
       </section>
 

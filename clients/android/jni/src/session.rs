@@ -84,6 +84,10 @@ pub struct SessionConfig {
     pub tor_state_dir: String,
     /// The direct relay this build talks to.
     pub relay_url: String,
+    /// The relay's onion address, if the user has one. Empty means no Tor route
+    /// is available on this install — see [`SessionConfig::tor`] for why this is
+    /// passed in rather than read from the environment.
+    pub onion_host: String,
 }
 
 impl SessionConfig {
@@ -98,10 +102,31 @@ impl SessionConfig {
 
     /// The Tor target for this build, if one is configured.
     ///
-    /// The variable names are the core's to define (D-045), so an Android
-    /// build and a CLI build cannot disagree about what configures Tor.
+    /// **Not** `TorRelayConfig::from_env`, which is what this used to call and
+    /// what every other client still calls. Android has no per-app environment
+    /// for a user to set a variable in, so reading one here meant the Tor route
+    /// could never be selected on a phone at all — `connect_tor` returned
+    /// `NoTorConfigured` unconditionally, and the transport screen offered a
+    /// choice that could not be made.
+    ///
+    /// The address therefore arrives from Kotlin alongside the direct one
+    /// (D-051). The core still owns what a route *is* and what it costs; this
+    /// only changes where the phone's copy of the address comes from.
+    ///
+    /// An address ending in `.onion` is the switch, mirroring
+    /// `TorRelayConfig::from_env`'s rule that the host alone decides whether
+    /// Tor is available. A blank or non-onion value means no Tor, rather than a
+    /// partially-configured one.
     fn tor(&self) -> Option<TorRelayConfig> {
-        TorRelayConfig::from_env(&self.tor_state_dir)
+        let host = self.onion_host.trim();
+        if !host.ends_with(".onion") {
+            return None;
+        }
+        Some(TorRelayConfig {
+            onion_host: host.to_string(),
+            onion_port: 80,
+            state_dir: self.tor_state_dir.clone(),
+        })
     }
 }
 
@@ -708,7 +733,58 @@ mod tests {
             db_path: dir.join("pouch.db").to_string_lossy().to_string(),
             tor_state_dir: dir.join("tor-state").to_string_lossy().to_string(),
             relay_url: "http://127.0.0.1:8443".to_string(),
+            onion_host: String::new(),
         })
+    }
+
+    fn config_with_onion(onion_host: &str) -> SessionConfig {
+        SessionConfig {
+            db_path: "pouch.db".to_string(),
+            tor_state_dir: "tor-state".to_string(),
+            relay_url: "http://127.0.0.1:8443".to_string(),
+            onion_host: onion_host.to_string(),
+        }
+    }
+
+    /// An onion address supplied by the app makes the Tor route available.
+    ///
+    /// This is the whole point of D-051: before it, `tor()` read an environment
+    /// variable that Android has no way to set, so `connect_tor` on a phone
+    /// always reported `NoTorConfigured` and the transport screen offered a
+    /// choice the user could not actually make.
+    #[test]
+    fn an_onion_address_from_the_app_configures_tor() {
+        let config =
+            config_with_onion("abcdefghijklmnopqrstuvwxyz234567abcdefghijklmnopqrstuv.onion");
+        let tor = config.tor().expect("an onion address should configure Tor");
+        assert_eq!(
+            tor.onion_host,
+            "abcdefghijklmnopqrstuvwxyz234567abcdefghijklmnopqrstuv.onion"
+        );
+        assert_eq!(tor.state_dir, "tor-state");
+    }
+
+    /// No address means no Tor, rather than a half-configured one.
+    ///
+    /// Mirrors `TorRelayConfig::from_env`'s rule that the host alone is the
+    /// switch. A partially-built config would surface as a bootstrap failure
+    /// deep in arti rather than as the honest "no Tor address is set".
+    #[test]
+    fn no_onion_address_means_no_tor_route() {
+        assert!(config_with_onion("").tor().is_none());
+        assert!(config_with_onion("   ").tor().is_none());
+    }
+
+    /// Something that is not an onion address does not enable Tor.
+    ///
+    /// A user pasting their direct relay URL into the onion field would
+    /// otherwise produce a "Tor" route that is not Tor — the Custody Strip
+    /// would read TOR over a connection that never entered the network, which
+    /// is precisely the reassuring-but-false readout SPEC §1 forbids.
+    #[test]
+    fn a_non_onion_address_does_not_enable_tor() {
+        assert!(config_with_onion("http://127.0.0.1:8443").tor().is_none());
+        assert!(config_with_onion("relay.example.com").tor().is_none());
     }
 
     /// A runtime for tests, since `dispatch` is async.

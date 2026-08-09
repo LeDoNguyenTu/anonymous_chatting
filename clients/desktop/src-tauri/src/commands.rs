@@ -25,6 +25,8 @@ use pouch_core::{
 };
 use tauri::{Manager, State};
 
+use crate::relay_process::{LocalRelay, LocalRelayStatus};
+
 use crate::state::{database_path, relay_config, AppState};
 
 /// Whether this device already holds an identity.
@@ -629,4 +631,46 @@ fn device_key(app: &tauri::AppHandle) -> Result<Vec<u8>, String> {
 
     let dir = app_data_dir(app)?;
     development_device_key(&dir.join("device.key")).map_err(|e| e.to_string())
+}
+
+/* -- the relay that ships in this installer (D-051) ------------------------- */
+
+/// Starts the bundled relay so other people can reach this device.
+///
+/// Not called on launch. Hosting a relay means publishing an onion service and
+/// accepting inbound traffic for as long as the window is open, which is a
+/// choice rather than a default — see `relay_process` for the reasoning.
+///
+/// Returns as soon as the process is spawned, not when the onion service is
+/// published: publishing takes tens of seconds, and blocking the window for
+/// that long would look like a hang. The returned status carries
+/// `onionAddress: null` until it appears, and the screen must show that as
+/// "starting" rather than as failure.
+#[tauri::command]
+pub async fn start_local_relay(
+    app: tauri::AppHandle,
+    relay: State<'_, LocalRelay>,
+) -> Result<LocalRelayStatus, String> {
+    let dir = app_data_dir(&app)?;
+    relay.start(dir)
+}
+
+/// Stops the bundled relay.
+///
+/// Anyone reaching this device through its onion address loses that route.
+/// Blobs already accepted stay in the relay's database until their TTL expires
+/// — stopping is not erasure, and the UI says so rather than implying it.
+#[tauri::command]
+pub async fn stop_local_relay(relay: State<'_, LocalRelay>) -> Result<LocalRelayStatus, String> {
+    relay.stop()
+}
+
+/// What the bundled relay is doing right now.
+///
+/// Polled by the hosting screen. Re-checks the process rather than replaying
+/// the last thing it was told, so a relay that died mid-bootstrap reports as
+/// stopped instead of reporting "starting" forever.
+#[tauri::command]
+pub async fn local_relay_status(relay: State<'_, LocalRelay>) -> Result<LocalRelayStatus, String> {
+    relay.status()
 }

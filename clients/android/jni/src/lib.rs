@@ -76,11 +76,13 @@ pub extern "system" fn Java_com_pouch_core_PouchNative_nativeStart<'local>(
     db_path: JString<'local>,
     tor_state_dir: JString<'local>,
     relay_url: JString<'local>,
+    onion_host: JString<'local>,
 ) {
     let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
         let db_path = read_string(&mut env, &db_path)?;
         let tor_state_dir = read_string(&mut env, &tor_state_dir)?;
         let relay_url = read_string(&mut env, &relay_url)?;
+        let onion_host = read_string(&mut env, &onion_host)?;
 
         if BRIDGE.get().is_some() {
             return Ok(());
@@ -94,6 +96,7 @@ pub extern "system" fn Java_com_pouch_core_PouchNative_nativeStart<'local>(
             db_path,
             tor_state_dir,
             relay_url,
+            onion_host,
         });
 
         // `set` failing means another thread won the race, which is the same
