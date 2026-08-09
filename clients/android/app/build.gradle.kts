@@ -36,26 +36,26 @@ android {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64", "x86")
         }
 
-        // Where the relay lives, fixed at build time.
+        // The relay this build *falls back* to, not the one it is locked to.
         //
-        // Deliberately **not** a user preference and deliberately not settable
-        // from the running app: a client that can be pointed at an arbitrary
-        // relay from its own interface is a client that can be talked into it.
-        // Pointing at the wrong relay does not expose message content — the
-        // relay never holds a key — but it hands that operator the inbox
-        // identifiers and connection timing THREAT_MODEL.md §5 lists as
-        // visible, and it silently breaks delivery. Same boundary
-        // RelayConfig::from_env draws on desktop (D-049).
+        // On desktop the relay address comes from the environment and nothing
+        // the UI can write reaches it (D-049). Android has no per-app
+        // environment, so that boundary would leave only one way to point a
+        // phone at a relay: rebuild the APK per relay. D-051 records why that
+        // is worse rather than safer — it pushes people toward installing a
+        // stranger's pre-configured build, which hands over the address *and*
+        // the binary. The app therefore asks for the address on first run and
+        // stores it in its own private preferences.
         //
-        // The default is 10.0.2.2:8443, the emulator's route to the host
-        // machine's loopback, which is where a development relay runs. A build
-        // meant for a real phone must override it — an emulator address is
-        // unreachable from a handset, and the app will simply queue everything:
+        // This value is what a fresh install shows in that field before the
+        // user changes it. 10.0.2.2:8443 is the emulator's route to the host
+        // machine's loopback, which is where a development relay runs; on a
+        // handset it is unreachable and everything queues, which is why the
+        // first-run screen cannot be skipped.
+        //
+        // Overridable at build time for a deployment with a known relay:
         //
         //   gradle :app:assembleRelease -PpouchRelayUrl=https://relay.example:8443
-        //
-        // Over Tor, pass the onion address instead. There is no fallback if it
-        // is wrong, by design.
         val relayUrl = (findProperty("pouchRelayUrl") as String?)
             ?: "http://10.0.2.2:8443"
         buildConfigField("String", "RELAY_URL", "\"$relayUrl\"")
@@ -86,22 +86,36 @@ android {
     //
     // Losing this file means Play will not accept another update of this app,
     // ever. Back it up somewhere you would not lose a passport.
-    // Fully qualified from the root package. Inside an `android { }` block the
-    // bare name `java` resolves to the Java plugin extension, not the JDK
-    // package, so `java.util.Properties` is a compile error here and reads like
-    // a working line everywhere else.
+    //
+    // In CI the same four values arrive as environment variables from repository
+    // secrets, so a tagged release can produce a signed artifact without a
+    // keystore ever being committed. Absent both, the release build is unsigned
+    // and says so.
+    //
+    // `Properties` is imported at the top of this file rather than written as
+    // `java.util.Properties` here: inside an `android { }` block the bare name
+    // `java` resolves to the Java plugin extension, not the JDK package, so the
+    // fully-qualified form is a compile error that reads like a working line.
     val keystoreProperties = Properties().apply {
         val file = rootProject.file("keystore.properties")
         if (file.exists()) file.inputStream().use { this.load(it) }
     }
 
+    // The properties file wins over the environment. A developer who has both
+    // is working locally, and a local keystore is the one they meant.
+    val storePath = keystoreProperties.getProperty("storeFile")
+        ?: System.getenv("POUCH_KEYSTORE_FILE")
+
     signingConfigs {
-        if (keystoreProperties.containsKey("storeFile")) {
+        if (storePath != null && file(storePath).exists()) {
             create("release") {
-                storeFile = file(keystoreProperties.getProperty("storeFile"))
+                storeFile = file(storePath)
                 storePassword = keystoreProperties.getProperty("storePassword")
+                    ?: System.getenv("POUCH_KEYSTORE_PASSWORD")
                 keyAlias = keystoreProperties.getProperty("keyAlias")
+                    ?: System.getenv("POUCH_KEY_ALIAS")
                 keyPassword = keystoreProperties.getProperty("keyPassword")
+                    ?: System.getenv("POUCH_KEY_PASSWORD")
             }
         }
     }

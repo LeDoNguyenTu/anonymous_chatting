@@ -91,6 +91,12 @@ jobs:
       # which. Generating a key here instead would put the app's permanent
       # identity in CI logs — and on Play, the first key you ship is the only
       # key that can ever update the app.
+      # Decoded to a file; the three passwords stay in the environment and are
+      # never written to disk. An earlier version of this step wrote all four
+      # into keystore.properties through an *unquoted* heredoc, which expanded
+      # them as shell text — a password containing a backtick or $( ) would have
+      # been executed rather than stored. Gradle reads these variable names
+      # directly, so the file is not needed at all.
       - name: Restore the signing keystore
         id: keystore
         if: env.KEYSTORE_BASE64 != ''
@@ -99,13 +105,14 @@ jobs:
         shell: bash
         run: |
           set -eu
-          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
-          cat > clients/android/keystore.properties <<EOF
-          storeFile=$RUNNER_TEMP/release.jks
-          storePassword=${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          keyAlias=${{ secrets.ANDROID_KEY_ALIAS }}
-          keyPassword=${{ secrets.ANDROID_KEY_PASSWORD }}
-          EOF
+          printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
+          # Confirm it decoded to a keystore rather than to nothing. A truncated
+          # secret would otherwise surface as an unsigned artifact that looks
+          # deliberate.
+          if [ ! -s "$RUNNER_TEMP/release.jks" ]; then
+            echo "ANDROID_KEYSTORE_BASE64 decoded to an empty file."
+            exit 1
+          fi
           echo "signed=true" >> "$GITHUB_OUTPUT"
 
       - name: Unit tests
@@ -121,6 +128,13 @@ jobs:
         working-directory: clients/android
         env:
           RELAY_URL: ${{ vars.POUCH_RELAY_URL }}
+          # Read by app/build.gradle.kts when no keystore.properties exists.
+          # Empty when the repository has no signing secrets, which produces an
+          # unsigned release APK rather than a build failure.
+          POUCH_KEYSTORE_FILE: ${{ steps.keystore.outputs.signed == 'true' && format('{0}/release.jks', runner.temp) || '' }}
+          POUCH_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          POUCH_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          POUCH_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           set -eu
           args=""
