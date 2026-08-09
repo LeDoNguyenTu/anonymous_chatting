@@ -41,6 +41,65 @@ jobs:
           cache: npm
           cache-dependency-path: clients/desktop/package-lock.json
 
+      # SQLCipher is OpenSSL-backed, so `libsqlite3-sys`'s build script needs
+      # OPENSSL_DIR and panics without it. On Linux the system OpenSSL is found
+      # automatically; on Windows nothing sets it.
+      #
+      # This is worth stating plainly because it caught the first release
+      # attempt: the same build succeeded on the developer's Windows machine and
+      # failed here, purely because that machine has OPENSSL_DIR exported
+      # globally. A local success that depends on an unexported environment
+      # variable is not evidence the build is self-contained.
+      #
+      # Discovered rather than hardcoded. The runner image documents that
+      # OpenSSL 3.6.3 is installed but does not document where, and images move
+      # things between releases — a hardcoded path would fail later with the
+      # same unhelpful panic. Four strategies, then a loud failure that prints
+      # enough to fix it in one iteration rather than three.
+      - name: Locate OpenSSL for SQLCipher
+        shell: bash
+        run: |
+          set -eu
+
+          try() {
+            if [ -n "${1:-}" ] && [ -d "$1/include/openssl" ]; then
+              echo "OPENSSL_DIR=$(cygpath -w "$1")" >> "$GITHUB_ENV"
+              echo "found OpenSSL at $1"
+              exit 0
+            fi
+          }
+
+          # 1. The usual installer locations.
+          try "/c/Program Files/OpenSSL"
+          try "/c/Program Files/OpenSSL-Win64"
+
+          # 2. vcpkg, whose root the image does export.
+          if [ -n "${VCPKG_INSTALLATION_ROOT:-}" ]; then
+            try "$(cygpath -u "$VCPKG_INSTALLATION_ROOT")/installed/x64-windows"
+          fi
+
+          # 3. Derive it from the binary on PATH — bin/openssl.exe means the
+          #    prefix is its grandparent.
+          if command -v openssl >/dev/null 2>&1; then
+            try "$(dirname "$(dirname "$(command -v openssl)")")"
+          fi
+
+          # 4. Strawberry Perl ships one, and the image has Strawberry Perl.
+          try "/c/Strawberry/c"
+
+          echo "No OpenSSL include directory found."
+          echo
+          echo "openssl on PATH: $(command -v openssl 2>/dev/null || echo 'not found')"
+          echo "VCPKG_INSTALLATION_ROOT: ${VCPKG_INSTALLATION_ROOT:-unset}"
+          echo
+          echo "Under /c/Program Files:"
+          ls "/c/Program Files" 2>/dev/null | grep -i ssl || echo "  nothing matching ssl"
+          echo
+          echo "Any openssl headers on C: (first 5):"
+          find /c -maxdepth 6 -type d -name openssl -path '*include*' 2>/dev/null | head -5 \
+            || echo "  none"
+          exit 1
+
       # The tests that gate a release are the ones that can run here. This is a
       # deliberately smaller gate than CI: the full suite already ran on the
       # commit this tag points at, and re-running it would not tell us anything
