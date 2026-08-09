@@ -247,6 +247,22 @@ jobs:
             echo "$v=" >> "$GITHUB_ENV"
           done
 
+          # Strawberry Perl ahead of Git Bash's own.
+          #
+          # `shell: bash` on a Windows runner is Git Bash, whose /usr/bin/perl is
+          # a minimal build without Locale::Maketext::Simple or IPC::Cmd — the
+          # two modules OpenSSL's Configure loads before doing anything. The
+          # runner image ships Strawberry Perl, which has both, but /usr/bin
+          # shadows it. The first version of this step failed here in 33
+          # seconds, which is the check doing its job: without it the same
+          # missing module would have surfaced fifteen minutes into the build as
+          # a wall of perl errors under a cargo build script.
+          if [ -x /c/Strawberry/perl/bin/perl.exe ]; then
+            echo "C:\\Strawberry\\perl\\bin" >> "$GITHUB_PATH"
+            echo "C:\\Strawberry\\c\\bin" >> "$GITHUB_PATH"
+            export PATH="/c/Strawberry/perl/bin:/c/Strawberry/c/bin:$PATH"
+          fi
+
           if ! command -v perl >/dev/null; then
             echo "perl not found. OpenSSL cannot be built from source without it."
             exit 1
@@ -254,8 +270,10 @@ jobs:
           perl -e 'use Locale::Maketext::Simple; use IPC::Cmd; print "perl: ", $^V, " with the modules Configure needs\n"' || {
             echo "perl is present but missing modules OpenSSL's Configure requires."
             echo "perl in use: $(command -v perl)"
+            echo "Strawberry Perl present: $([ -x /c/Strawberry/perl/bin/perl.exe ] && echo yes || echo no)"
             exit 1
           }
+          echo "perl in use: $(command -v perl)"
 
       # The tests that gate a release are the ones that can run here. This is a
       # deliberately smaller gate than CI: the full suite already ran on the
