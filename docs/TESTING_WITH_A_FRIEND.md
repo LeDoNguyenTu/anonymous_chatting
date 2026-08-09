@@ -42,7 +42,7 @@ you meant.
 
 ## Step 1 — Get the binaries
 
-Download from the [Releases page](https://github.com/LeDoNguyenTu/anonymous_chatting/releases).
+Download from the [v0.1.5 release](https://github.com/LeDoNguyenTu/anonymous_chatting/releases/tag/v0.1.5).
 You want `Pouch-setup.exe` (both of you) and `pouch-relay.exe` (whoever hosts).
 
 **The binaries are not code-signed.** There is no certificate for this project.

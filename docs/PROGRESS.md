@@ -17,7 +17,7 @@ Do not begin a phase before the previous phase meets its exit criteria.
 | **Branches** | `main` and `develop`, both pushed; `main` intentionally behind `develop`. `phase-5-android` holds the Phase 5 work, pushed to origin, **not merged**. No worktree this time — the Phase 4 worktree at `.worktrees/phase-4-tor/` is merged and can be removed. |
 | **Blocked on** | Nothing in code. **Two design items need the project owner**, both recorded rather than improvised: cover traffic (D-044) and Android Keystore (D-035, SPEC §2.6 — "an implementation shortcut would mean storing a key in a less protected location"). |
 | **Tests** | 149 Rust core + 14 end-to-end + 14 relay + 4 server-blindness = **181 Rust workspace** (1 ignored — the live-Tor test, run by hand) · **11 Android bridge** (`clients/android/jni`, run on the host) · **44 desktop frontend** · **11 Android JVM** (Custody Strip state mapping, passing in CI). Was 180 Rust at the end of Phase 5's foundation. |
-| **CI** | Two Android jobs, `android-bridge` and `android-app`, **both green on the first run**. `android-bridge`: fmt, clippy, the 11 host tests, `cargo audit` on its own lock file, and the four-ABI cross-compile — so the arti, openmls and SQLCipher trees **do** link for Android (D-047 confirmed, not predicted). `android-app`: the 11 Custody Strip JVM tests, lint, `assembleDebug`, and a check on the *merged* manifest showing INTERNET and nothing else. A third workflow, `release.yml`, builds Windows artifacts from a `v*` tag. What CI does **not** show is anything executing on an Android device — see the Phase 5 section. |
+| **CI** | Two Android jobs, `android-bridge` and `android-app`, **both green on the first run**. `android-bridge`: fmt, clippy, the 11 host tests, `cargo audit` on its own lock file, and the four-ABI cross-compile — so the arti, openmls and SQLCipher trees **do** link for Android (D-047 confirmed, not predicted). `android-app`: the 11 Custody Strip JVM tests, lint, `assembleDebug`, and a check on the *merged* manifest showing INTERNET and nothing else. A third workflow, `release.yml`, built and published **v0.1.5** from a `v*` tag — five assets, checksums, marked prerelease. What CI does **not** show is anything executing on an Android device, or two people using the desktop build. |
 | **Version** | `0.1.5`. Six files move together. `SPEC_PHASE` deliberately stays at `4`: Phase 5 is not closed, and moving it would be the over-claiming its own comment warns about. |
 
 ### Owed to the project owner
@@ -1084,26 +1084,53 @@ Collapsed onto the CLI's existing names, CLI reader deleted, one definition.
 
 ### What is now shipped
 
-`.github/workflows/release.yml`, triggered by a `v*` tag:
+**v0.1.5 is published**, built by `.github/workflows/release.yml` from the tag:
 
-| Artifact | What it is |
+| Artifact | Size |
 |---|---|
-| `Pouch-setup.exe` | NSIS installer |
-| `Pouch.msi` | Same client for `msiexec` |
-| `pouch-relay.exe` | The relay |
-| `pouch-cli.exe` | Headless client |
-| `SHA256SUMS.txt` | Hashes for all four |
+| `Pouch-setup.exe` | 7.78 MB — NSIS installer |
+| `Pouch.msi` | 11.57 MB — same client for `msiexec` |
+| `pouch-relay.exe` | 12.21 MB — the relay |
+| `pouch-cli.exe` | 15.30 MB — headless client |
+| `SHA256SUMS.txt` | hashes for all four |
 
-Each artifact is confirmed to exist by `stat` before the release publishes.
-`tauri build` exiting 0 is not the same as an installer existing, and a release
-with missing assets looks *finished* where a failed build looks failed — the
-D-024 pattern, same as the Android ABI check.
+Marked prerelease. Each artifact is confirmed to exist by `stat` before the
+release publishes — `tauri build` exiting 0 is not the same as an installer
+existing, and a release with missing assets looks *finished* where a failed
+build looks failed. The D-024 pattern, same as the Android ABI check.
 
-**Built and verified locally, not just in YAML.** `npx tauri build` on this
-machine produced `Pouch_0.1.4_x64-setup.exe` at 7.8 MB, an 11.6 MB MSI, and a
-31 MB standalone executable. The workflow is a transcription of a build that
-ran, which is a materially different claim from a workflow that has never been
-executed.
+### The local build proved less than it appeared to
+
+Before tagging, `npx tauri build` was run on this machine and produced a 7.8 MB
+installer. That was recorded here as evidence the workflow was "a transcription
+of a build that ran."
+
+**The first release attempt failed anyway**, in its first step:
+
+```
+libsqlite3-sys build.rs panicked:
+  Missing environment variable OPENSSL_DIR or OPENSSL_DIR is not set
+```
+
+SQLCipher is OpenSSL-backed. This machine has `OPENSSL_DIR` exported globally,
+so the local build found it and the runner did not. A local success that depends
+on an unexported environment variable does not establish that the build is
+self-contained, and the note above was true while implying something false.
+
+**The second attempt failed too**, further in: `LNK1181: cannot open input file
+'libcrypto.lib'`. Setting `OPENSSL_DIR` satisfied the build script's own check
+and then failed at link time, because the Windows installers nest the import
+library — commonly under `lib/VC/x64/MD` — rather than putting it in `lib/`.
+The workflow now searches for `libcrypto.lib` and sets `OPENSSL_LIB_DIR` from
+wherever it actually is.
+
+Both failures share a shape worth naming: **a check passed while the thing it
+was supposed to establish stayed false.** `OPENSSL_DIR` being set is not OpenSSL
+being linkable; a local build succeeding is not a portable build. It is the same
+failure mode as a green test that asserts nothing, and it is the reason the
+artifact step stats files rather than trusting an exit code.
+
+Third attempt succeeded: 62 minutes, all steps green, five assets attached.
 
 **Unsigned** (D-050). No Authenticode certificate exists for a student project,
 so SmartScreen will report an unknown publisher and is right to. Both the
