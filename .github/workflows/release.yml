@@ -377,10 +377,13 @@ jobs:
             — that is a real check, where clicking through the warning is not.
 
             **Android**: the APK and AAB are signed only when the repository has a
-            keystore configured. An unsigned release APK cannot be installed. The
-            debug APK is always signed with the debug key and can be installed
-            anywhere; it is suffixed `.debug` so it cannot replace a release
-            build. The AAB is for Play — APK is what you sideload.
+            keystore configured. An unsigned release APK cannot be installed —
+            Android refuses it outright, and there is no warning to click
+            through. **Install `Pouch-debug.apk`**, which is always signed with
+            the debug key; it is suffixed `.debug` so it cannot replace a
+            release build. The AAB is for Play — APK is what you sideload.
+            [`docs/SIGNING_ANDROID.md`](docs/SIGNING_ANDROID.md) is the
+            procedure for making that key.
 
             A matching hash proves the file is the one this build produced. It
             does not prove the software is safe.
@@ -393,9 +396,10 @@ jobs:
             | `Pouch.msi` | The same client, for `msiexec` |
             | `pouch-relay.exe` | The relay. One person runs this. |
             | `pouch-cli.exe` | Headless client, for testing without a window |
-            | `Pouch.apk` or `Pouch-unsigned.apk` | Android client, release build |
+            | `Pouch-debug.apk` | **Android: install this one.** Debug-signed, so it installs. |
+            | `Pouch-unsigned.apk` | Android release build, unsigned — cannot be installed |
+            | `Pouch.apk` | The same build, signed. Present only once the repository has a key. |
             | `Pouch.aab` | Android App Bundle for Play |
-            | `Pouch-debug.apk` | Debug build with `.debug` suffix, always signed |
             | `SHA256SUMS.txt` | Hashes for Windows artifacts |
             | `SHA256SUMS-android.txt` | Hashes for Android artifacts |
 

@@ -57,8 +57,15 @@ From the [releases page](https://github.com/LeDoNguyenTu/anonymous_chatting/rele
 | You want | If |
 |---|---|
 | `Pouch-setup.exe` | Windows. Contains the client *and* the relay. |
-| `Pouch.apk` | Android. Sideload it. |
-| `Pouch-debug.apk` | Android, if the release APK is unsigned. Installs as a separate app. |
+| `Pouch-debug.apk` | Android. **This is the one to sideload today.** |
+| `Pouch.apk` | Android, once the project has a signing key. Absent until then. |
+
+**On Android, take the debug APK.** Releases so far ship
+`Pouch-unsigned.apk`, and Android refuses to install an unsigned APK — there is
+nothing to click through. `Pouch-debug.apk` is signed with the debug key, so it
+installs, and it carries the `.debug` suffix so it sits alongside a release
+build rather than replacing one. It is a debug build: anything with adb access
+can inspect it. `docs/SIGNING_ANDROID.md` is how that changes.
 
 **The binaries are not code-signed.** There is no certificate for this project.
 Windows SmartScreen will say the publisher is unknown, and Android will warn
@@ -154,6 +161,7 @@ Attachments are JPEG, PNG and WebP only — video is refused with an explanation
 | Custody Strip says `DIRECT` on the joining machine | The Tor switch did not take. Re-check the onion address. |
 | "No Tor relay address is configured" | No onion address was set. Android: first screen. Desktop: `POUCH_RELAY_TOR_ONION`. |
 | Messages send but never arrive | Both clients must reach the *same* relay, and the host's Pouch must be open. |
+| Android refuses to install the APK at all | You have `Pouch-unsigned.apk`. Android will not install an unsigned APK. Use `Pouch-debug.apk`. |
 | Android app installs but crashes on launch | The APK was built without native libraries for your phone's ABI. Report it with your device model. |
 | "could not be verified against a pinned key" | A non-loopback `POUCH_RELAY` without `POUCH_RELAY_PIN`. Use the onion route. |
 | Messages queue and never send on Android | The relay address is still the build default (`10.0.2.2`), which is an emulator address. Settings → Change relay. |

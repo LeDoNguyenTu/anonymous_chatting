@@ -17,7 +17,7 @@ Do not begin a phase before the previous phase meets its exit criteria.
 | **Branches** | `main` and `develop`, both pushed; `main` intentionally behind `develop`. `phase-5-android` holds the Phase 5 work, pushed to origin, **not merged**. No worktree this time — the Phase 4 worktree at `.worktrees/phase-4-tor/` is merged and can be removed. |
 | **Blocked on** | Nothing in code. **Two design items need the project owner**, both recorded rather than improvised: cover traffic (D-044) and Android Keystore (D-035, SPEC §2.6 — "an implementation shortcut would mean storing a key in a less protected location"). |
 | **Tests** | 149 Rust core + 14 end-to-end + 14 relay + 4 server-blindness = **181 Rust workspace** (1 ignored — the live-Tor test, run by hand) · **14 Android bridge** (`clients/android/jni`, run on the host; was 11, plus three for the onion-address rule) · **52 desktop frontend** (was 44, plus eight for the Hosting screen) · **16 Android JVM** (11 Custody Strip + 5 relay-address validation). |
-| **CI** | Seven jobs green on `phase-5-android`. `android-bridge` cross-compiles all four ABIs; `android-app` runs the JVM tests, lint, `assembleDebug`, the merged-manifest check, and a `--dry-run` of `assembleRelease bundleRelease` that resolves the release task graph without executing it. `release.yml` published **v0.1.5** and **v0.1.6 (Windows half only** — installer and MSI both carry the relay; the Android job failed in configuration, fixed for v0.1.7). What CI does **not** show is anything executing on an Android device, or two people using the desktop build. |
+| **CI** | Seven jobs green on `phase-5-android`. `android-bridge` cross-compiles all four ABIs; `android-app` runs the JVM tests, lint, `assembleDebug`, the merged-manifest check, and a `--dry-run` of `assembleRelease bundleRelease` that resolves the release task graph without executing it. `release.yml` published **v0.1.5**, **v0.1.6 (Windows half only)**, and **v0.1.7 — the first run where both jobs passed**: installer, MSI, relay, CLI, debug APK, unsigned release APK, AAB. What CI does **not** show is anything executing on an Android device, or two people using the desktop build. |
 | **Version** | `0.1.7`. Six files plus **four** lock files move together — `package-lock.json` is one of them, and had read `0.1.3` since that release because `npm ci` enforces dependency agreement but not the root version. `SPEC_PHASE` deliberately stays at `4`: Phase 5 is not closed — its exit criterion is an APK running on a physical device, and nothing here has run on one. |
 
 ### Owed to the project owner
@@ -1005,18 +1005,39 @@ Read this before believing anything above implies a working Android app.
   names those three as missing rather than omitting them silently — a phone build
   that looked complete would lose someone their data the first time they assumed
   backup was there.
-- **No installable APK exists yet, and the reason is now a missing keystore
-  rather than a broken build.** The v0.1.6 release job failed in `Build the APK
-  and the AAB` at `build.gradle.kts:110` with `path may not be null or empty
-  string` — the workflow passes `POUCH_KEYSTORE_FILE` as an *empty string* when
-  the repository has no signing secrets, `System.getenv` returned `""` rather
-  than null, the null check guarding the signing config passed, and `file("")`
-  threw during configuration, before a single task ran. Blank now counts as
-  absent. Two further defects sat behind that one, unreachable while
-  configuration failed: `proguard-rules.pro` was referenced and did not exist,
-  and R8 was on (now off — D-053). Signing wiring is in place, four values from
-  either `keystore.properties` or CI secrets, but no keystore exists, so an
-  unsigned artifact is the best this can produce until the owner creates one.
+- **An installable APK now exists, and the release APK is unsigned by design.**
+  v0.1.7 is the first release run in this project where both jobs passed.
+  `Pouch-debug.apk` (145 MB) carries a valid **v2 signature** and installs;
+  `Pouch-unsigned.apk` (143 MB) and `Pouch.aab` (56 MB) do not, because no
+  keystore exists. **Verified by opening the published artifacts**, not by
+  reading a green check: all four `libpouch_jni.so` present in both APKs at the
+  sizes CI reported, `Lcom/pouch/core/PouchNative;`, `PouchException`,
+  `nativeStart` and `nativeCall` all **unrenamed** in the dex (the R8-off
+  decision, D-053, confirmed rather than assumed), the parsed binary manifest
+  requesting `INTERNET` and nothing else, and every SHA-256 matching the
+  published sums. `docs/SIGNING_ANDROID.md` is the remaining step, and it is the
+  owner's.
+
+  One thing that looked like a SPEC §2.2 violation and was not: a raw string
+  scan of the manifest shows `android.permission.DUMP`. Parsing the binary XML
+  shows it is a `permission=` guard on androidx's `ProfileInstallReceiver` —
+  it restricts who may invoke that receiver to a caller holding DUMP, and grants
+  this app nothing. The string pool lists every string regardless of use. CI's
+  merged-manifest check was right; the scrape was not.
+- **The relay is inside the Windows installer, confirmed from the published
+  MSI.** Parsing `Pouch.msi` as a compound file and reading its `app.cab`
+  directory lists `Bin_pouch_relay.exe` at 12,205,056 bytes — the same size as
+  the standalone `pouch-relay.exe` on the same release. An installer that builds
+  successfully while missing a component looks *finished*, which is why this is
+  checked by extraction rather than by exit code.
+- **The v0.1.6 failure, for the record.** It failed in `Build the APK and the
+  AAB` at `build.gradle.kts:110` with `path may not be null or empty string` —
+  the workflow passes `POUCH_KEYSTORE_FILE` as an *empty string* when the
+  repository has no signing secrets, `System.getenv` returned `""` rather than
+  null, the null check guarding the signing config passed, and `file("")` threw
+  during configuration, before a single task ran. Blank now counts as absent.
+  Two further defects sat behind that one, unreachable while configuration
+  failed: `proguard-rules.pro` was referenced and did not exist, and R8 was on.
 - **The gap that let a tag be spent on a typo is closed.** `android-app` only
   ever configured the *debug* variant, so the release variant's configuration
   was first evaluated forty minutes into a tagged release. CI now runs
@@ -1045,15 +1066,23 @@ Read this before believing anything above implies a working Android app.
 
 ### Next, in order
 
-1. **Generate a release keystore (owner) and add the four CI secrets**, so the
-   APK is installable rather than unsigned. This is the only thing between
-   v0.1.7 and a phone build someone can put on a device. The build defect that
-   failed v0.1.6 is fixed; what remains is a key that only the owner should
-   hold.
-2. Decide the Keystore question (1 above).
-3. The three missing screens: attachment preview, backup, wipe.
-4. Move the Custody Strip copy into the core, for both clients.
-5. An APK on a real device — the actual exit criterion.
+1. **Install `Pouch-debug.apk` on a phone and launch it.** This no longer needs
+   the owner to generate anything — the debug APK is v2-signed and installs
+   today. It is also the first time any of this Kotlin or its JNI marshalling
+   will execute anywhere, so treat the first launch as the test it is. Phase 5's
+   exit criterion is a *release* APK on a device, but a debug launch is what
+   turns "compiles" into "runs" and is the cheapest way to find out whether
+   `System.loadLibrary` and the two native entry points work at all.
+2. **Generate a release keystore (owner) and add the four CI secrets**, so the
+   release APK is installable rather than unsigned, and Play becomes possible.
+   `docs/SIGNING_ANDROID.md` is the procedure. The build defect that failed
+   v0.1.6 is fixed; what remains is a key only the owner should hold.
+3. Decide the Keystore question — database keying, D-035, above. Not the same
+   thing as (2), and easy to conflate: (2) signs the artifact, this one protects
+   the database.
+4. The three missing screens: attachment preview, backup, wipe.
+5. Move the Custody Strip copy into the core, for both clients.
+6. The two-person walkthrough, which nobody has completed.
 
 ---
 
