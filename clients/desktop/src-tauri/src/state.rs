@@ -60,10 +60,16 @@ pub fn database_path(app_data_dir: PathBuf) -> PathBuf {
 
 /// The relay this build talks to.
 ///
-/// Loopback and unpinned for now, which `RelayClient::new` only tolerates
-/// because it is loopback (D-017). Phase 4 replaces this with an onion address.
+/// Loopback by default, which `RelayClient::new` only tolerates because it is
+/// loopback (D-017). A deployment overrides it with `POUCH_RELAY_URL` and
+/// `POUCH_RELAY_SPKI_PIN` — see [`RelayConfig::from_env`] for why that is
+/// deployment configuration rather than a setting the window can change.
+///
+/// Without this a distributed build could only ever reach a relay on the
+/// machine it was running on, which made the shipped artifact useless for the
+/// two-person test the release exists for.
 pub fn relay_config() -> RelayConfig {
-    RelayConfig::insecure_local("http://127.0.0.1:8443")
+    RelayConfig::from_env("http://127.0.0.1:8443")
 }
 
 /// Where this device's Tor state persists across runs.

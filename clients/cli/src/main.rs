@@ -52,9 +52,20 @@ STORAGE
 ENVIRONMENT
   POUCH_DB            path to the local database    (default ./pouch.db)
   POUCH_RELAY         relay base URL                (default http://127.0.0.1:8443)
+  POUCH_RELAY_PIN     SHA-256 of the relay cert's SPKI, hex, for a remote relay
   POUCH_PASSPHRASE    passphrase, if this device is protected by one
   POUCH_RECOVERY_KEY  recovery key, for backup import only
   POUCH_KEY           64 hex characters, the database key
+
+  A POUCH_RELAY that is not loopback is refused without POUCH_RELAY_PIN. That
+  is not a warning to click past: an unpinned remote relay cannot be shown to
+  be the relay you meant, and any CA in the trust store is enough to sit in
+  the middle of it.
+
+  pouch-relay itself serves plain HTTP, so the pin belongs to whatever
+  terminates TLS in front of it — a reverse proxy you run. For two people on
+  different machines the simpler route is POUCH_RELAY_TOR_ONION below, which
+  needs no certificate, no domain, and no proxy.
 
   POUCH_KEY is a development convenience and is not how a real client should
   hold a key. An environment variable is readable by other processes and lands

@@ -1,0 +1,165 @@
+name: Release (Windows)
+
+# Tag-triggered, not push-triggered. A release is a deliberate act: pushing to a
+# branch should never mint an artifact someone might install.
+#
+#   git tag v0.1.5 && git push origin v0.1.5
+#
+# workflow_dispatch is here so a build can be rehearsed without burning a tag —
+# it produces the same artifacts and skips the release step.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+# Needed to create the release. Scoped to this workflow rather than granted
+# repository-wide.
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    name: Build the desktop app and the relay for Windows
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            clients/desktop/src-tauri
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: clients/desktop/package-lock.json
+
+      # The tests that gate a release are the ones that can run here. This is a
+      # deliberately smaller gate than CI: the full suite already ran on the
+      # commit this tag points at, and re-running it would not tell us anything
+      # new about the artifact. What *is* worth re-running on Windows is the
+      # core suite, because this is the only job that builds it for this target.
+      - name: Test the core on the target platform
+        run: cargo test --workspace
+
+      - name: Build the frontend
+        working-directory: clients/desktop
+        run: |
+          npm ci
+          npm run build
+
+      # --locked, because this crate is outside the workspace and its committed
+      # Cargo.lock is the only thing pinning its transitive dependencies
+      # (D-029). A release is the worst possible place to re-resolve.
+      - name: Build the desktop bundle
+        working-directory: clients/desktop
+        run: npx tauri build -- --locked
+
+      - name: Build the relay
+        run: cargo build --release --locked -p pouch-relay
+
+      - name: Build the CLI
+        run: cargo build --release --locked -p pouch-cli
+
+      # `tauri build` exiting 0 is not the same as an installer existing, and a
+      # release whose assets are missing is worse than a failed build — it looks
+      # finished. Same reasoning as the Android ABI check (D-024).
+      - name: Collect the artifacts and confirm each one exists
+        shell: bash
+        run: |
+          set -eu
+          mkdir -p dist
+
+          bundle=clients/desktop/src-tauri/target/release/bundle
+          nsis=$(find "$bundle/nsis" -name '*-setup.exe' 2>/dev/null | head -1)
+          msi=$(find "$bundle/msi" -name '*.msi' 2>/dev/null | head -1)
+
+          missing=0
+          copy_or_fail() {
+            if [ -n "$1" ] && [ -f "$1" ]; then
+              cp "$1" "dist/$2"
+              echo "ok       $2  $(stat -c%s "$1") bytes"
+            else
+              echo "MISSING  $2"
+              missing=1
+            fi
+          }
+
+          copy_or_fail "$nsis"                          "Pouch-setup.exe"
+          copy_or_fail "$msi"                           "Pouch.msi"
+          copy_or_fail "target/release/pouch-relay.exe" "pouch-relay.exe"
+          copy_or_fail "target/release/pouch-cli.exe"   "pouch-cli.exe"
+
+          exit "$missing"
+
+      # Kept for workflow_dispatch runs, which produce no release to attach to.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pouch-windows
+          path: dist/
+
+      - name: Publish the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          # Prerelease, and it will stay that way while the exit criteria in
+          # docs/PROGRESS.md are unmet. Marking unaudited student software as a
+          # stable release is the kind of claim SPEC §2.5 exists to prevent.
+          prerelease: true
+          body: |
+            **Unaudited student software. Not reviewed by any cryptographer.
+            Do not use this for anything that matters.**
+
+            ### Binaries are unsigned
+
+            There is no code-signing certificate for this project, so Windows
+            SmartScreen will warn that the publisher is unknown, and it is
+            right to. Verify the SHA-256 below against the file you downloaded
+            before running it — that is a real check, where clicking through
+            the warning is not.
+
+            ### What is in this release
+
+            | File | What it is |
+            |---|---|
+            | `Pouch-setup.exe` | Desktop client installer (NSIS) |
+            | `Pouch.msi` | The same client, for `msiexec` |
+            | `pouch-relay.exe` | The relay. One person runs this. |
+            | `pouch-cli.exe` | Headless client, for testing without a window |
+
+            ### Setting it up with another person
+
+            See [`docs/TESTING_WITH_A_FRIEND.md`](docs/TESTING_WITH_A_FRIEND.md).
+            The short version: the client talks to `127.0.0.1:8443` unless
+            `POUCH_RELAY_URL` or `POUCH_RELAY_TOR_ONION` says otherwise, so
+            two people on different machines need one of those set.
+
+            ### Known limits in this build
+
+            - The Android client does not ship here and has never run on a
+              device.
+            - The local database key is a file beside the database unless a
+              passphrase is set (D-035). Set a passphrase.
+            - Read `docs/THREAT_MODEL.md` §4 before trusting this with
+              anything.
+
+      - name: Checksums
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          cd dist
+          sha256sum * | tee SHA256SUMS.txt
+
+      - name: Attach the checksums
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/SHA256SUMS.txt
