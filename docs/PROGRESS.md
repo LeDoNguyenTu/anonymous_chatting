@@ -1082,6 +1082,12 @@ Read this before believing anything above implies a working Android app.
 
 ### Next, in order
 
+> **Start with [`docs/HANDOVER.md`](HANDOVER.md).** The `v0.1.8` release is
+> half-published — Android artifacts only, no installer and no Windows checksums
+> — and its tag points at a commit predating the perl fix. That file has the
+> one command that resolves both, and the state of the OpenSSL fix verified
+> against a locally built MSI.
+
 1. **Install `Pouch-debug.apk` on a phone and launch it.** This no longer needs
    the owner to generate anything — the debug APK is v2-signed and installs
    today. It is also the first time any of this Kotlin or its JNI marshalling
