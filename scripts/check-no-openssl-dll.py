@@ -30,9 +30,16 @@ import sys
 ALLOWED_PREFIXES = ("api-ms-win-", "ext-ms-win-")
 ALLOWED = {
     "advapi32.dll", "bcrypt.dll", "bcryptprimitives.dll", "combase.dll",
+    # comctl32: the common-control library every Win32 UI links; present since
+    # NT. Pulled in by the Tauri shell's native window chrome, not by us.
+    "comctl32.dll",
     "crypt32.dll", "d3d12.dll", "dwmapi.dll", "dxgi.dll", "gdi32.dll",
     "iphlpapi.dll", "kernel32.dll", "msvcrt.dll", "ntdll.dll", "ole32.dll",
-    "oleaut32.dll", "pdh.dll", "powrprof.dll", "propsys.dll", "rpcrt4.dll",
+    "oleaut32.dll", "pdh.dll", "powrprof.dll", "propsys.dll",
+    # psapi: process-status API, shipped with every Windows since NT 4. Reached
+    # through a dependency's process introspection, not called directly here.
+    "psapi.dll",
+    "rpcrt4.dll",
     "secur32.dll", "shcore.dll", "shell32.dll", "shlwapi.dll", "user32.dll",
     "userenv.dll", "uxtheme.dll", "vcruntime140.dll", "vcruntime140_1.dll",
     "version.dll", "webview2loader.dll", "win32u.dll", "windows.ui.dll",
