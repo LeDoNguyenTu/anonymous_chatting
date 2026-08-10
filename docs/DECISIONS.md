@@ -2244,3 +2244,108 @@ does not need to be.
 `openssl-src` changes how it selects the interpreter, or the `windows-latest`
 runner image stops shipping Strawberry Perl at `C:\Strawberry`. The step fails
 loudly with that path in the message if it moves.
+
+---
+
+## D-057 — The server-blindness canary must be long enough to be unique
+
+### Context
+
+`CI / Rust — build, test, clippy` failed on `develop` at `69ec369`, a commit
+that touched only the release workflow, its comments and docs. The failure:
+
+```
+thread 'two_clients_exchange_text_and_the_relay_learns_nothing' panicked at
+core/tests/end_to_end.rs:589:9:
+"Mai" survives in the relay database
+```
+
+That assertion is the SPEC §8.3 server-blindness test — by this repository's
+own description the single highest-value test it contains. It dumps the whole
+relay database and asserts a set of strings from the conversation appear
+nowhere in it. One of those strings was the display name `"Mai"`.
+
+The test file had not changed in five commits, so the first question was
+whether the relay had started storing display names. It has not.
+
+### The arithmetic
+
+The relay database is ~811 KB, nearly all of it ciphertext, so a needle of
+n bytes is expected to occur by chance N / 256^n times:
+
+```
+'Mai'               3 bytes  expected hits=4.834e-02  P(>=1 per run)=4.719e-02
+'Brian'             5 bytes  expected hits=7.376e-07  P(>=1 per run)=7.376e-07
+'message 7'         9 bytes  expected hits=1.717e-16  P(>=1 per run)=2.220e-16
+'Mai Thornbury'    13 bytes  expected hits=3.999e-26  P(>=1 per run)=0.000e+00
+```
+
+Local reproduction: 27 runs, 2 failures — 7.4% against a predicted 4.7%.
+Instrumentation printed the match in context:
+
+```
+CANARY "Mai" at offset 240460 of 811008 bytes
+  hex: ... 4d 61 69 43 c5 52 29 28 25 38 4e c1 86 52 81 ...
+  txt: "ս;»¸Ì£NÝÖ‰ŸØQ×&¼®.¢ú?u±MaiCÅR)(%8NÁ†R…"
+```
+
+`4d 61 69` sits mid-ciphertext beside no readable field. It is a collision,
+not a record. The asymmetry confirms it: only the three-byte canary ever
+failed, never `"Brian"`, `"understood"`, `"message 7"` or
+`"the meeting is at dawn"`. And 25 of 27 runs passed — a relay that stored
+the name would fail every run, not one in twenty.
+
+### Decision
+
+SPEC §8.3 requires "a **known unique string**". Three bytes is not one, so the
+test did not meet the standard it cites. Both blindness tests now use display
+names long enough to be unique — `Brian Ashgrove` and `Mai Thornbury` — and
+the two short message bodies that were also canaries were lengthened to match
+(`understood, dawn it is`, `message {i} of the exchange`). The bodies were
+changed rather than only the canary strings: a canary that is not a string the
+test actually transmits asserts nothing.
+
+The length requirement is enforced, not documented. `assert_relay_never_saw`
+checks the canary against `MIN_CANARY_BYTES = 8` before scanning, and its
+message says to lengthen the string rather than lower the bound. Eight bytes
+puts the collision figure at 4e-14.
+
+### Why the guard and not just longer names
+
+A too-short canary does not fail loudly on the day it matters. It fails at
+random on unrelated commits, and the cost of that is not the red build — it is
+that the obvious response to a flaky privacy test is to weaken it. Whoever
+next adds a test contact will pick a short name unless something stops them,
+and the assertion they would be weakening is the one that proves the server
+sees nothing. Same shape as D-024: a check that passed while the property it
+was meant to establish stayed unestablished.
+
+### Verified
+
+Shown to fail in both directions before being trusted, per the standing rule
+that a guardrail never seen to fail is not known to work:
+
+```
+panicked at core/tests/end_to_end.rs:82:5:
+"SQLite format 3" survives in the relay database
+
+panicked at core/tests/end_to_end.rs:74:5:
+canary "SQLite" is 6 bytes; under 8 it occurs in ciphertext by chance often
+enough that the assertion below is a coin toss. Lengthen the string — do not
+lower the bound.
+```
+
+Then 40 consecutive runs of both blindness tests: 40 passed, 0 failed. The
+arithmetic is the proof; 40 runs only shows no regression, since at thirteen
+bytes no feasible number of runs would produce a collision either way.
+
+181 workspace tests pass, fmt and clippy clean, six guardrails pass.
+
+No production code changed. No dependency, feature or version changed. This
+entry is about a test's own soundness.
+
+### Revisit when
+
+The relay database grows by orders of magnitude — the bound is derived from
+its size, and `MIN_CANARY_BYTES` has a decade of headroom at 8 bytes but is
+not infinite.

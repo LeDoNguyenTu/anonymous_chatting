@@ -53,6 +53,39 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
     haystack.windows(needle.len()).any(|w| w == needle)
 }
 
+/// SPEC 8.3 asks for a *known unique string*. A short canary is not one.
+///
+/// The relay database is ~800 KB, nearly all of it ciphertext, so a needle of
+/// n bytes is expected to occur by chance 800_000 / 256^n times. At three bytes
+/// that is 0.048 — a 4.7% chance of a spurious failure every run. The display
+/// name "Mai" was three bytes, and it duly failed CI on a commit that touched
+/// only the release workflow, having passed hundreds of times before. Twenty
+/// local runs reproduced it once, with the match landing mid-ciphertext next to
+/// no readable field.
+///
+/// Eight bytes puts the same figure at 4e-14, which will not happen. Canary
+/// length is asserted here rather than left to whoever next names a test
+/// contact, because the failure mode of a too-short canary is not a red build:
+/// it is a test that passes for the wrong reason on the day the relay does leak.
+const MIN_CANARY_BYTES: usize = 8;
+
+/// Assert a canary is absent from the relay's database, per SPEC 8.3.
+fn assert_relay_never_saw(dump: &[u8], canary: &[u8]) {
+    assert!(
+        canary.len() >= MIN_CANARY_BYTES,
+        "canary {:?} is {} bytes; under {MIN_CANARY_BYTES} it occurs in ciphertext \
+         by chance often enough that the assertion below is a coin toss. Lengthen \
+         the string — do not lower the bound.",
+        String::from_utf8_lossy(canary),
+        canary.len(),
+    );
+    assert!(
+        !contains(dump, canary),
+        "{:?} survives in the relay database",
+        String::from_utf8_lossy(canary),
+    );
+}
+
 #[tokio::test]
 async fn a_backup_restores_identity_messages_and_verification_onto_a_fresh_device() {
     // SPEC §7.3 and D-037. The claim under test is the one that actually
@@ -494,13 +527,16 @@ async fn two_clients_exchange_text_and_the_relay_learns_nothing() {
     let mai_db = dir.path().join("mai.db").to_string_lossy().into_owned();
 
     // --- first run: two identities, created locally, registering nothing ----
-    let mut brian = Pouch::create("Brian", &brian_db, &mut key(0x11), relay()).expect("brian");
-    let mut mai = Pouch::create("Mai", &mai_db, &mut key(0x22), relay()).expect("mai");
+    // Full names, not "Brian" and "Mai": these two are scanned for at the end
+    // of the test and have to clear MIN_CANARY_BYTES. See assert_relay_never_saw.
+    let mut brian =
+        Pouch::create("Brian Ashgrove", &brian_db, &mut key(0x11), relay()).expect("brian");
+    let mut mai = Pouch::create("Mai Thornbury", &mai_db, &mut key(0x22), relay()).expect("mai");
 
     // --- add contact: Mai publishes a code, Brian starts the conversation ---
     let mai_code = mai.invite_code().expect("mai invite code");
     let conversation = brian
-        .add_contact("Mai", &mai_code)
+        .add_contact("Mai Thornbury", &mai_code)
         .await
         .expect("brian adds mai");
 
@@ -519,7 +555,7 @@ async fn two_clients_exchange_text_and_the_relay_learns_nothing() {
     // Mai learned Brian's name over the encrypted channel, not from the relay.
     let mai_conversations = mai.conversations().expect("mai conversations");
     assert_eq!(mai_conversations.len(), 1);
-    assert_eq!(mai_conversations[0].contact_name, "Brian");
+    assert_eq!(mai_conversations[0].contact_name, "Brian Ashgrove");
 
     // --- and neither party is verified, because nobody compared anything ----
     for summary in mai.conversations().expect("mai") {
@@ -541,18 +577,20 @@ async fn two_clients_exchange_text_and_the_relay_learns_nothing() {
     assert_eq!(received.messages.len(), 1);
     assert_eq!(received.messages[0].body, "the meeting is at dawn");
 
-    mai.send_message(&conversation, "understood")
+    mai.send_message(&conversation, "understood, dawn it is")
         .await
         .expect("mai replies");
 
     let back = brian.receive_messages().await.expect("brian polls");
     assert_eq!(back.messages.len(), 1);
-    assert_eq!(back.messages[0].body, "understood");
+    assert_eq!(back.messages[0].body, "understood, dawn it is");
 
     // --- a run of messages arrives intact and in order ----------------------
+    // "message {i} of the exchange" rather than "message {i}": the seventh is a
+    // canary below and nine bytes is not enough to be unique. See D-057.
     for i in 0..12 {
         brian
-            .send_message(&conversation, &format!("message {i}"))
+            .send_message(&conversation, &format!("message {i} of the exchange"))
             .await
             .expect("brian sends");
     }
@@ -563,7 +601,7 @@ async fn two_clients_exchange_text_and_the_relay_learns_nothing() {
     let bodies: Vec<&str> = stored.iter().map(|m| m.body.as_str()).collect();
     for i in 0..12 {
         assert!(
-            bodies.contains(&format!("message {i}").as_str()),
+            bodies.contains(&format!("message {i} of the exchange").as_str()),
             "message {i} is missing from the stored conversation"
         );
     }
@@ -581,16 +619,12 @@ async fn two_clients_exchange_text_and_the_relay_learns_nothing() {
     let dump = std::fs::read(&relay_db).expect("relay database is readable");
     for canary in [
         &b"the meeting is at dawn"[..],
-        &b"understood"[..],
-        &b"Brian"[..],
-        &b"Mai"[..],
-        &b"message 7"[..],
+        &b"understood, dawn it is"[..],
+        &b"Brian Ashgrove"[..],
+        &b"Mai Thornbury"[..],
+        &b"message 7 of the exchange"[..],
     ] {
-        assert!(
-            !contains(&dump, canary),
-            "{:?} survives in the relay database",
-            String::from_utf8_lossy(canary)
-        );
+        assert_relay_never_saw(&dump, canary);
     }
 
     // --- and the local databases are encrypted at rest ----------------------
@@ -666,10 +700,15 @@ async fn an_attachment_strips_metadata_and_the_relay_learns_nothing_about_it() {
     let brian_db = dir.path().join("brian.db").to_string_lossy().into_owned();
     let mai_db = dir.path().join("mai.db").to_string_lossy().into_owned();
 
-    let mut brian = Pouch::create("Brian", &brian_db, &mut key(0x11), relay()).expect("brian");
-    let mut mai = Pouch::create("Mai", &mai_db, &mut key(0x22), relay()).expect("mai");
+    // Full names for the same reason as the text test: both are canaries below.
+    let mut brian =
+        Pouch::create("Brian Ashgrove", &brian_db, &mut key(0x11), relay()).expect("brian");
+    let mut mai = Pouch::create("Mai Thornbury", &mai_db, &mut key(0x22), relay()).expect("mai");
     let code = mai.invite_code().expect("code");
-    let conversation = brian.add_contact("Mai", &code).await.expect("adds");
+    let conversation = brian
+        .add_contact("Mai Thornbury", &code)
+        .await
+        .expect("adds");
     mai.receive_messages().await.expect("mai joins");
 
     const GPS: &str = "GPS 37.774900 N 122.419400 W";
@@ -711,14 +750,10 @@ async fn an_attachment_strips_metadata_and_the_relay_learns_nothing_about_it() {
         CAMERA.as_bytes(),
         COMMENT.as_bytes(),
         FILENAME.as_bytes(),
-        b"Brian",
-        b"Mai",
+        b"Brian Ashgrove",
+        b"Mai Thornbury",
     ] {
-        assert!(
-            !contains(&dump, canary),
-            "{:?} survives in the relay database",
-            String::from_utf8_lossy(canary)
-        );
+        assert_relay_never_saw(&dump, canary);
     }
 
     // And the metadata is actually gone from what Mai received, not merely
