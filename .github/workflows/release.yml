@@ -230,9 +230,27 @@ jobs:
       #
       # Setting OPENSSL_DIR now would be actively harmful: openssl-sys prefers a
       # located copy over vendoring, so leaving that step in place would quietly
-      # undo the fix and reproduce the same broken artifact. The variables are
-      # therefore cleared rather than merely left unset, in case a runner image
-      # ever exports one.
+      # undo the fix and reproduce the same broken artifact.
+      #
+      # The first attempt to defend against that wrote empty values for
+      # OPENSSL_DIR, OPENSSL_LIB_DIR, OPENSSL_INCLUDE_DIR and
+      # OPENSSL_NO_VENDOR, on the belief that clearing a variable is safer than
+      # leaving it unset. GITHUB_ENV cannot unset anything — it only assigns —
+      # so all four became the empty string, and openssl-sys reads them as set:
+      #
+      #     if env("OPENSSL_NO_VENDOR").map_or(true, |s| s == "0")
+      #
+      # `Some("")` is not `"0"`, so vendoring was skipped, find_normal ran, and
+      # the build panicked with `OpenSSL library directory does not exist: [""]`.
+      # A step written to guarantee vendoring is what prevented it — the same
+      # shape as D-024, and as the empty keystore password in v0.1.6.
+      #
+      # OPENSSL_NO_VENDOR=0 is the one value that gate accepts, and setting it
+      # is sufficient on its own: find_openssl returns from the vendored branch
+      # before find_normal is reached, so OPENSSL_DIR and friends are never read
+      # whatever the runner image exports. They are therefore left alone rather
+      # than assigned a value that means something we do not intend. The
+      # target-prefixed name is set too, because openssl-sys checks it first.
       #
       # perl is a real build prerequisite — OpenSSL's Configure is a perl
       # script, and it needs a full distribution, not a minimal one. Checked up
@@ -243,9 +261,8 @@ jobs:
         shell: bash
         run: |
           set -eu
-          for v in OPENSSL_DIR OPENSSL_LIB_DIR OPENSSL_INCLUDE_DIR OPENSSL_NO_VENDOR; do
-            echo "$v=" >> "$GITHUB_ENV"
-          done
+          echo "OPENSSL_NO_VENDOR=0" >> "$GITHUB_ENV"
+          echo "X86_64_PC_WINDOWS_MSVC_OPENSSL_NO_VENDOR=0" >> "$GITHUB_ENV"
 
           # Strawberry Perl ahead of Git Bash's own.
           #

@@ -2047,3 +2047,94 @@ the target machine has no reason to carry. The import scan is worth revisiting
 only to make it stricter: it currently names OpenSSL specifically, where the
 honest requirement is that no shipped binary imports any DLL outside the
 Windows system set.
+
+---
+
+## D-055 — Vendoring is asserted, not implied by an absent variable
+
+Supersedes point 1 of D-054, which said the OpenSSL variables "are now cleared
+rather than merely left unset". They were not cleared. They were set to the
+empty string, and that is a different thing.
+
+### Context
+
+D-054 selected `bundled-sqlcipher-vendored-openssl` for every target so no
+shipped binary imports a DLL the target machine has no reason to carry. The
+release workflow then tried to defend that choice against a runner image that
+might export `OPENSSL_DIR`, by writing this before the build:
+
+```bash
+for v in OPENSSL_DIR OPENSSL_LIB_DIR OPENSSL_INCLUDE_DIR OPENSSL_NO_VENDOR; do
+  echo "$v=" >> "$GITHUB_ENV"
+done
+```
+
+`GITHUB_ENV` has no syntax for unsetting a variable. It only assigns. All four
+became the empty string, which `openssl-sys` reads as *present*:
+
+```rust
+// build/main.rs:53 — vendor if the feature is present, unless
+// OPENSSL_NO_VENDOR exists and isn't `0`
+if env("OPENSSL_NO_VENDOR").map_or(true, |s| s == "0") {
+    return find_vendored::get_openssl(target);
+}
+```
+
+`Some("")` is not `"0"`. The gate fell through to `find_normal`, which read
+`OPENSSL_LIB_DIR=""` and panicked at `main.rs:202`:
+`OpenSSL library directory does not exist: [""]`. The Windows release job died
+in `cargo test --workspace`.
+
+The step written to guarantee vendoring is the step that prevented it. That is
+the D-024 shape again, and the v0.1.6 empty keystore password again: a value
+that reads as configured and means the opposite of what was intended. Three
+instances now, all of them an empty string standing in for absence.
+
+### Decision
+
+Assert the one variable the gate accepts instead of blanking four:
+
+```bash
+echo "OPENSSL_NO_VENDOR=0" >> "$GITHUB_ENV"
+echo "X86_64_PC_WINDOWS_MSVC_OPENSSL_NO_VENDOR=0" >> "$GITHUB_ENV"
+```
+
+Both names, because `env()` checks the target-prefixed one first and either can
+independently disable vendoring.
+
+`OPENSSL_DIR`, `OPENSSL_LIB_DIR` and `OPENSSL_INCLUDE_DIR` are now left
+untouched. This is not laziness about the hostile case — it is that they cannot
+matter. `find_openssl` returns from the vendored branch before `find_normal` is
+reached, and those three are read only inside `find_normal`
+(`build/find_normal.rs:8`, `:9`, `:14`). Whatever the runner exports is never
+consulted. Assigning them a value we do not mean is what caused this.
+
+### Verified
+
+Against the build script itself, on Windows, with this machine's real
+`OPENSSL_DIR` still exported — the hostile case, not a clean one:
+
+| Configuration | Result |
+|---|---|
+| `OPENSSL_NO_VENDOR=` (the shipped bug) | `OPENSSL_NO_VENDOR = ` then `panicked ... OpenSSL library directory does not exist: [""]`, exit 101 |
+| `OPENSSL_NO_VENDOR=0` (this decision) | `X86_64_PC_WINDOWS_MSVC_OPENSSL_NO_VENDOR = 0`, `cargo:vendored=1`, `cargo:root=...\openssl-build\install`, exit 0 |
+
+`cargo:vendored=1` while `OPENSSL_DIR=C:\Program Files\OpenSSL-Win64` is
+exported is the load-bearing line: the vendored branch wins regardless of what
+the environment points at.
+
+### Consequences
+
+No cryptographic change and no dependency change. Same SQLCipher, same
+AES-256, same `openssl-src v300.6.1+3.6.3` in all three lock files.
+
+The artifact check from D-054 point 2 is unaffected and remains the thing that
+actually gates publication — it reads the import table of every built `.exe`.
+This decision only ensures the build reaches that check.
+
+### Revisit when
+
+`openssl-sys` changes the gate. It is a `map_or` over a single environment
+variable in a build script, and the workflow now depends on that exact
+predicate; the comment above the step quotes it for that reason. A version bump
+of `openssl-sys` should re-read `build/main.rs:53` before being trusted.
