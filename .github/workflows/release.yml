@@ -256,7 +256,8 @@ jobs:
       # script, and it needs a full distribution, not a minimal one. Checked up
       # front so a missing interpreter fails in two seconds with a clear reason
       # rather than fifteen minutes in with a stack of perl module errors.
-      # nasm is *not* required: openssl-src passes `no-asm`.
+      # nasm is *not* required: openssl-src probes for it and passes `no-asm`
+      # when it is absent, using the assembly routines when it is present.
       - name: Confirm the vendored OpenSSL build can run
         shell: bash
         run: |
@@ -264,33 +265,42 @@ jobs:
           echo "OPENSSL_NO_VENDOR=0" >> "$GITHUB_ENV"
           echo "X86_64_PC_WINDOWS_MSVC_OPENSSL_NO_VENDOR=0" >> "$GITHUB_ENV"
 
-          # Strawberry Perl ahead of Git Bash's own.
+          # Name the interpreter instead of arranging for PATH to find it.
           #
-          # `shell: bash` on a Windows runner is Git Bash, whose /usr/bin/perl is
-          # a minimal build without Locale::Maketext::Simple or IPC::Cmd — the
-          # two modules OpenSSL's Configure loads before doing anything. The
-          # runner image ships Strawberry Perl, which has both, but /usr/bin
-          # shadows it. The first version of this step failed here in 33
-          # seconds, which is the check doing its job: without it the same
-          # missing module would have surfaced fifteen minutes into the build as
-          # a wall of perl errors under a cargo build script.
+          # `shell: bash` on a Windows runner is Git Bash, whose /usr/bin/perl
+          # is a minimal build without Locale::Maketext::Simple or IPC::Cmd —
+          # the two modules OpenSSL's Configure loads before doing anything.
+          # The runner image ships Strawberry Perl, which has both.
+          #
+          # Prepending Strawberry to GITHUB_PATH is not enough, and the second
+          # v0.1.8 attempt proved it: this step reported
+          # `perl in use: /c/Strawberry/perl/bin/perl`, the pwsh steps agreed,
+          # and then `Stage the relay sidecar` — the next `shell: bash` step —
+          # ran Configure under /usr/bin/perl and died on the same missing
+          # module. Git Bash rebuilds PATH per step with /usr/bin ahead of what
+          # GITHUB_PATH prepends, so a PATH fix holds in some steps and not
+          # others, which is worse than not holding at all.
+          #
+          # openssl-src reads OPENSSL_SRC_PERL before consulting PATH
+          # (src/lib.rs:157), so this is exact rather than positional and does
+          # not care which shell a later step uses.
           if [ -x /c/Strawberry/perl/bin/perl.exe ]; then
-            echo "C:\\Strawberry\\perl\\bin" >> "$GITHUB_PATH"
-            echo "C:\\Strawberry\\c\\bin" >> "$GITHUB_PATH"
-            export PATH="/c/Strawberry/perl/bin:/c/Strawberry/c/bin:$PATH"
+            echo 'OPENSSL_SRC_PERL=C:\Strawberry\perl\bin\perl.exe' >> "$GITHUB_ENV"
+            perl_bin=/c/Strawberry/perl/bin/perl.exe
+          else
+            echo "Strawberry Perl not found at C:\\Strawberry\\perl\\bin."
+            echo "OpenSSL cannot be built from source without a full perl."
+            exit 1
           fi
 
-          if ! command -v perl >/dev/null; then
-            echo "perl not found. OpenSSL cannot be built from source without it."
-            exit 1
-          fi
-          perl -e 'use Locale::Maketext::Simple; use IPC::Cmd; print "perl: ", $^V, " with the modules Configure needs\n"' || {
+          # Verify the interpreter the build will actually invoke, not whichever
+          # one this step's PATH happens to resolve.
+          "$perl_bin" -e 'use Locale::Maketext::Simple; use IPC::Cmd; print "perl: ", $^V, " with the modules Configure needs\n"' || {
             echo "perl is present but missing modules OpenSSL's Configure requires."
-            echo "perl in use: $(command -v perl)"
-            echo "Strawberry Perl present: $([ -x /c/Strawberry/perl/bin/perl.exe ] && echo yes || echo no)"
+            echo "perl checked: $perl_bin"
             exit 1
           }
-          echo "perl in use: $(command -v perl)"
+          echo "OPENSSL_SRC_PERL will be: C:\\Strawberry\\perl\\bin\\perl.exe"
 
       # The tests that gate a release are the ones that can run here. This is a
       # deliberately smaller gate than CI: the full suite already ran on the

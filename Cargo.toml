@@ -71,9 +71,12 @@ zeroize = { version = "=1.8.1", features = ["zeroize_derive"] }
 # Vendoring means one statically-linked OpenSSL per binary, built from source.
 # It costs build time and requires perl on the build host — a full distribution,
 # not a minimal one: OpenSSL's Configure needs Locale::Maketext::Simple and
-# IPC::Cmd, which Git Bash's bundled perl does not carry. nasm is *not* needed;
-# openssl-src passes `no-asm`. Not a cryptographic change: same SQLCipher, same
-# AES-256, sourced differently.
+# IPC::Cmd, which Git Bash's bundled perl does not carry. Which perl runs is
+# named outright by `OPENSSL_SRC_PERL` rather than left to PATH — see D-056.
+# nasm is *not* required: `openssl-src` checks for it and passes `no-asm` when
+# it is absent, using the assembly routines when it is present. Both paths
+# build; the GitHub runner takes the second. Not a cryptographic change: same
+# SQLCipher, same AES-256, sourced differently.
 rusqlite = { version = "=0.39.0", features = [
     "bundled-sqlcipher-vendored-openssl",
 ] }

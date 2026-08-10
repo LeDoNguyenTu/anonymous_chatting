@@ -2138,3 +2138,109 @@ This decision only ensures the build reaches that check.
 variable in a build script, and the workflow now depends on that exact
 predicate; the comment above the step quotes it for that reason. A version bump
 of `openssl-sys` should re-read `build/main.rs:53` before being trusted.
+
+---
+
+## D-056 — The perl that builds OpenSSL is named, not looked up
+
+Supersedes the `GITHUB_PATH` half of the fix in `196cae1`, which prepended
+Strawberry Perl to `PATH` and was then reported in D-055's own workflow as
+sufficient. It was not.
+
+### Context
+
+With D-055 in place, vendoring actually happened, and the Windows release job
+got far enough to run OpenSSL's `Configure`. It then failed:
+
+```
+running "perl" "./Configure" "--prefix=D:/a/anonymous_chatting/..." ... "VC-WIN64A"
+cargo:warning=configuring OpenSSL build: 'perl' reported failure with exit code: 2
+Can't locate Locale/Maketext/Simple.pm in @INC (@INC entries checked: ... /usr/share/perl5/core_perl ...)
+```
+
+`shell: bash` on a Windows runner is Git Bash, whose `/usr/bin/perl` is a
+minimal build missing the two modules `Configure` loads first. The runner image
+also ships Strawberry Perl, which has both.
+
+The interesting part is not that the wrong perl ran; it is *where*. The guard
+step had already prepended Strawberry to `GITHUB_PATH`, and had itself printed:
+
+```
+perl: v5.42.0 with the modules Configure needs
+perl in use: /c/Strawberry/perl/bin/perl
+```
+
+Every `shell: pwsh` step agreed. The failure came from `Stage the relay
+sidecar` — the *next* `shell: bash` step — which resolved `/usr/bin/perl`
+again. Git Bash rebuilds `PATH` per step with `/usr/bin` ahead of prepended
+entries, so a `GITHUB_PATH` prepend holds in some steps of the same job and not
+others. A guard that reports the right answer about a later step's environment,
+and is wrong, is the D-024 shape once more: the check passed while the thing it
+was supposed to establish stayed false.
+
+### Decision
+
+Name the interpreter instead of arranging for `PATH` to find it. `openssl-src`
+reads `OPENSSL_SRC_PERL` first, then `PERL`, then falls back to `"perl"` on
+`PATH` (`openssl-src-300.6.1+3.6.3/src/lib.rs:157`):
+
+```rust
+let perl_program =
+    env::var("OPENSSL_SRC_PERL").unwrap_or(env::var("PERL").unwrap_or("perl".to_string()));
+```
+
+So the release job now writes an absolute Windows path to `GITHUB_ENV`:
+
+```bash
+echo 'OPENSSL_SRC_PERL=C:\Strawberry\perl\bin\perl.exe' >> "$GITHUB_ENV"
+```
+
+`GITHUB_ENV` is read by the runner, not by a shell's startup files, so the
+value survives into every subsequent step regardless of that step's `shell:`.
+The `GITHUB_PATH` writes are gone; nothing now depends on `PATH` ordering.
+
+Strawberry Perl missing is a hard failure with a named cause, rather than a
+fallback to whatever `command -v perl` finds. The fallback was the bug: it
+found a perl, reported success, and left the real failure fifteen minutes
+downstream inside a cargo build script.
+
+### Verified
+
+On Windows, with this machine's broken perl deliberately left first on `PATH`
+so the CI condition is reproduced rather than avoided:
+
+| Configuration | Result |
+|---|---|
+| `OPENSSL_SRC_PERL` unset, `command -v perl` → `/usr/bin/perl` | `Can't locate Locale/Maketext/Simple.pm in @INC`, exit 101 — the CI failure, character for character |
+| `OPENSSL_SRC_PERL=C:\Strawberry\perl\bin\perl.exe`, same broken `PATH` | `cargo:vendored=1`, exit 0, 6m43s |
+
+The second row is the load-bearing one: the vendored build completed while the
+perl on `PATH` was still the one that cannot run `Configure`.
+
+Both perls confirmed directly first, so the two rows differ for the reason
+claimed and not some other:
+
+```
+/usr/bin/perl                      -> Can't locate Locale/Maketext/Simple.pm
+/c/Strawberry/perl/bin/perl.exe    -> has modules: v5.42.2
+```
+
+### Consequences
+
+No cryptographic change, no dependency change, no version change. This decides
+which interpreter runs a build script, nothing more.
+
+The workflow now depends on two exact predicates in two dependencies'
+build scripts — `openssl-sys build/main.rs:53` for D-055 and
+`openssl-src src/lib.rs:157` for this one. Both are quoted in the comments
+above the steps that rely on them, because a version bump can move either.
+
+`openssl-src` also probes for `nasm` and passes `no-asm` when it is absent
+(`src/lib.rs:287-298`). Both paths build; that one is not pinned down here and
+does not need to be.
+
+### Revisit when
+
+`openssl-src` changes how it selects the interpreter, or the `windows-latest`
+runner image stops shipping Strawberry Perl at `C:\Strawberry`. The step fails
+loudly with that path in the message if it moves.
